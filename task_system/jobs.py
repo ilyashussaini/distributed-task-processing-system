@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from task_system.csv_sales import CSV_JOB_TYPE, InvalidCSV, summarize_sales
+
 
 class WordCountPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -21,6 +23,11 @@ class JobError(Exception):
 
 
 def run_job(job_type: str, payload: dict[str, Any], *, attempt: int = 1) -> dict[str, Any]:
+    if job_type == CSV_JOB_TYPE:
+        source = payload.get("csv")
+        if not isinstance(source, str):
+            raise InvalidCSV("Expected UTF-8 CSV text.")
+        return summarize_sales(source)
     if job_type == "recovery_demo":
         mode = RecoveryDemoPayload.model_validate(payload).mode
         if mode == "hang" or attempt == 1:

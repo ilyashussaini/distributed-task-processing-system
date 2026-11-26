@@ -10,6 +10,7 @@ from time import monotonic
 from typing import Any
 from uuid import UUID
 
+from task_system.csv_sales import InvalidCSV
 from task_system.jobs import JobError, run_job
 from task_system.logging import log_event
 
@@ -58,6 +59,8 @@ def execute_attempt(
         raise AttemptProcessError("Handler process returned invalid JSON.") from exc
     if isinstance(reply, dict):
         if isinstance(reply.get("error"), str):
+            if reply.get("retryable") is False:
+                raise InvalidCSV(reply["error"])
             raise JobError(reply["error"])
         if isinstance(reply.get("result"), dict):
             return reply["result"]
@@ -77,6 +80,8 @@ def main() -> None:
             result = run_job(request["type"], request["payload"], attempt=request["attempt"])
     except JobError as exc:
         reply = {"error": str(exc)}
+    except InvalidCSV as exc:
+        reply = {"error": str(exc), "retryable": False}
     else:
         reply = {"result": result}
     json.dump(reply, sys.stdout)

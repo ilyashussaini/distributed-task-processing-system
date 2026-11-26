@@ -20,6 +20,7 @@ export const formatDuration = (value: number | null) => {
 }
 
 export const formatType = (type: string) => {
+  if (type === 'csv_sales_summary') return 'CSV sales summary'
   const spaced = type.replaceAll('_', ' ')
   return spaced.charAt(0).toUpperCase() + spaced.slice(1)
 }

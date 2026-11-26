@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import DateTime, String, cast, func, or_, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, defer, sessionmaker
 
 from task_system.models import AttemptStatus, Job, JobAttempt, JobStatus
 from task_system.schemas import JobView
@@ -191,7 +191,7 @@ def monitoring_router(sessions: sessionmaker[Session]) -> APIRouter:
             session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
             total = session.scalar(select(func.count()).select_from(Job).where(*filters))
             rows = session.scalars(
-                select(Job).where(*filters).order_by(Job.created_at.desc(), Job.id.desc())
+                select(Job).options(defer(Job.payload)).where(*filters).order_by(Job.created_at.desc(), Job.id.desc())
                 .limit(limit).offset(offset)
             )
             return JobPage(jobs=[JobView.from_job(job) for job in rows], total=total)
@@ -200,7 +200,7 @@ def monitoring_router(sessions: sessionmaker[Session]) -> APIRouter:
     def details(job_id: UUID) -> JobDetails:
         with sessions() as session:
             session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
-            job = session.get(Job, job_id)
+            job = session.get(Job, job_id, options=(defer(Job.payload),))
             if job is None:
                 raise HTTPException(status_code=404, detail="Job not found")
             rows = session.scalars(

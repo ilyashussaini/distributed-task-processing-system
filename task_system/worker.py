@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from task_system.broker import Message, RedisBroker
 from task_system.config import Settings
+from task_system.csv_sales import InvalidCSV
 from task_system.db import make_engine, make_sessions
 from task_system.execution import AttemptProcessError, AttemptTimeout, execute_attempt
 from task_system.jobs import JobError
@@ -67,6 +68,10 @@ class Worker:
             self._record_failure(job, str(exc), "timeout", duration_ms)
         except JobError as exc:
             self._record_failure(job, str(exc), "handler_error", (monotonic() - started) * 1000)
+        except InvalidCSV as exc:
+            self._record_failure(
+                job, str(exc), "invalid_csv", (monotonic() - started) * 1000, retryable=False,
+            )
         except (AttemptProcessError, OSError) as exc:
             duration_ms = (monotonic() - started) * 1000
             log_event(logger, "handler_process_error", level=logging.ERROR, error=str(exc), **fields)
@@ -77,12 +82,14 @@ class Worker:
             else:
                 log_event(logger, "attempt_outcome_discarded", level=logging.WARNING, **fields)
 
-    def _record_failure(self, job: Job, error: str, reason: str, duration_ms: float) -> None:
+    def _record_failure(
+        self, job: Job, error: str, reason: str, duration_ms: float, *, retryable: bool = True,
+    ) -> None:
         fields = {"job_id": str(job.id), "attempt": job.attempts}
-        if self.store.fail(job, error, duration_ms=duration_ms):
+        if self.store.fail(job, error, duration_ms=duration_ms, retryable=retryable):
             log_event(
                 logger, "attempt_failed", reason=reason,
-                will_retry=job.attempts < job.max_attempts, **fields,
+                will_retry=retryable and job.attempts < job.max_attempts, **fields,
             )
         else:
             log_event(logger, "attempt_outcome_discarded", level=logging.WARNING, **fields)

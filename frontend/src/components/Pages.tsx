@@ -9,6 +9,7 @@ import { Loading } from './ui'
 const Throughput = lazy(() => import('./Charts').then((module) => ({ default: module.Throughput })))
 const Outcomes = lazy(() => import('./Charts').then((module) => ({ default: module.Outcomes })))
 const CompletionChart = lazy(() => import('./Charts').then((module) => ({ default: module.CompletionChart })))
+const Benchmarks = lazy(() => import('./Benchmarks'))
 
 const metrics = [
   { key: 'total', label: 'Total jobs', icon: Layers3 },
@@ -45,7 +46,13 @@ export function OverviewPage({ data, recent, window, onInspect }: {
 }
 
 export function AnalyticsPage({ state, window }: { state: PollState<Overview>; window: TimeWindow }) {
-  if (!state.data) return state.status === 'loading' ? <div className="panel"><Loading label="Loading performance data" /></div> : null
+  const benchmark = <Suspense fallback={<div className="panel"><Loading label="Loading benchmark charts" /></div>}>
+    <Benchmarks />
+  </Suspense>
+  if (!state.data) return <div className="page-stack">
+    {state.status === 'loading' && <div className="panel"><Loading label="Loading performance data" /></div>}
+    {benchmark}
+  </div>
   const data = state.data
   const { duration } = data.period
   const durationMetrics = [
@@ -82,6 +89,7 @@ export function AnalyticsPage({ state, window }: { state: PollState<Overview>; w
           ))}</dl>
         </section>
       </div>
+      {benchmark}
       <Suspense fallback={<div className="panel"><Loading label="Loading charts" /></div>}>
         <Throughput data={data} window={window} />
         <CompletionChart data={data} window={window} />
