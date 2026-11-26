@@ -1,4 +1,4 @@
-import { CalendarDays, Plus } from 'lucide-react'
+import { CalendarDays, Plus, ShieldCheck } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { getJobs, getOverview } from './api'
 import { JobDetails, SubmitDialog } from './components/Dialogs'
@@ -6,11 +6,12 @@ import { JobHistory, PAGE_SIZE } from './components/Jobs'
 import { AnalyticsPage, OverviewPage } from './components/Pages'
 import { Shell } from './components/Shell'
 import { ErrorNotice, Select } from './components/ui'
+import { isDemoMode } from './demo'
 import type { Job, JobStatus, TimeWindow, View } from './types'
 import { usePoll } from './usePoll'
 
 const viewLabels = {
-  overview: ['Job overview', 'All-time job counts and activity for the selected range.'],
+  overview: ['Job overview', 'Retained job counts and activity for the selected range.'],
   jobs: ['Job history', 'Search and inspect submitted jobs, results, and retry attempts.'],
   analytics: ['Performance analytics', 'Review throughput, execution duration, and retry activity.'],
 }
@@ -26,6 +27,7 @@ function route(): View | undefined {
 }
 
 export function App() {
+  const demo = isDemoMode()
   const [view, setView] = useState<View>(() => route() ?? 'overview')
   const [window, setWindow] = useState<TimeWindow>('24h')
   const [query, setQuery] = useState('')
@@ -50,9 +52,10 @@ export function App() {
     (signal: AbortSignal) => getJobs(PAGE_SIZE, PAGE_SIZE * page, query.trim(), status, signal),
     [page, query, status],
   )
-  const metrics = usePoll(window, loadOverview, view !== 'jobs')
-  const recent = usePoll('recent', loadRecent, view === 'overview')
-  const history = usePoll(JSON.stringify([page, query, status]), loadHistory, view === 'jobs')
+  const interval = demo ? null : undefined
+  const metrics = usePoll(window, loadOverview, view !== 'jobs', interval)
+  const recent = usePoll('recent', loadRecent, view === 'overview', interval)
+  const history = usePoll(JSON.stringify([page, query, status]), loadHistory, view === 'jobs', interval)
   const health = view === 'jobs' ? history : metrics
 
   function refresh() {
@@ -70,7 +73,8 @@ export function App() {
 
   const [title, subtitle] = viewLabels[view]
   return (
-    <Shell view={view} state={health} refresh={refresh}>
+    <Shell view={view} state={health} refresh={refresh} demo={demo}>
+      {demo && <div className="demo-note"><ShieldCheck size={17} aria-hidden="true" /><span><strong>Read-only demo</strong> · Explore sample jobs and recorded benchmarks.</span></div>}
       <div className="page-heading">
         <div><h1>{title}</h1><p>{subtitle}</p></div>
         <div className="page-actions">
@@ -80,9 +84,9 @@ export function App() {
               {(Object.keys(ranges) as TimeWindow[]).map((range) => <option value={range} key={range}>{ranges[range]}</option>)}
             </Select>
           </div>}
-          <button className="button button-primary" onClick={() => { setAnnouncement(''); setSubmitOpen(true) }}>
+          {!demo && <button className="button button-primary" onClick={() => { setAnnouncement(''); setSubmitOpen(true) }}>
             <Plus size={18} aria-hidden="true" />New job
-          </button>
+          </button>}
         </div>
       </div>
       <span className="sr-only" role="status" aria-live="polite">{announcement}</span>
@@ -92,7 +96,7 @@ export function App() {
         onQuery={(value) => { setQuery(value); setPage(0) }} onStatus={(value) => { setStatus(value); setPage(0) }}
         onPage={setPage} onInspect={setSelected} />}
       {view === 'analytics' && <AnalyticsPage state={metrics} window={window} />}
-      {submitOpen && <SubmitDialog onClose={() => setSubmitOpen(false)} onSubmitted={submitted} />}
+      {!demo && submitOpen && <SubmitDialog onClose={() => setSubmitOpen(false)} onSubmitted={submitted} />}
       {selected && <JobDetails key={selected.id} initial={selected} onClose={() => setSelected(undefined)} />}
     </Shell>
   )

@@ -1,0 +1,37 @@
+{
+    admin off
+    persist_config off
+    email {$TASKFLOW_ACME_EMAIL}
+}
+
+{$TASKFLOW_DOMAIN} {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        -Server
+    }
+
+    basic_auth {
+        operator {$TASKFLOW_OPERATOR_HASH}
+    }
+
+    handle_path /api/* {
+        request_body {
+            max_size 2MiB
+        }
+        reverse_proxy api:8000 {
+            header_up Authorization "Bearer {$TASKFLOW_API_TOKEN}"
+        }
+    }
+
+    handle {
+        reverse_proxy dashboard:8080 {
+            header_up -Authorization
+        }
+    }
+}

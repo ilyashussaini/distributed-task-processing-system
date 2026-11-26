@@ -2,6 +2,24 @@
 
 A distributed background job processor with a React and TypeScript monitoring dashboard. FastAPI accepts requests, PostgreSQL stores job and attempt state via SQLAlchemy, and Redis Streams distributes jobs across Python 3.12 workers. Jobs include word counting and sales CSV validation and aggregation.
 
+## Portfolio demo
+
+Taskflow shows a job from HTTP submission through queueing, execution, retry, and a persisted result. The dashboard lets reviewers browse attempt history and compare measured throughput and latency across worker counts.
+
+- **Workloads** · Word counting and bounded sales CSV validation with exact regional totals.
+- **Recovery** · Renewable database leases, isolated execution deadlines, and tested worker-loss recovery.
+- **Monitoring** · Job history, timing and retries, and a recorded 1-, 2-, and 4-worker benchmark.
+- **Hosting** · A browser-only portfolio demo and a protected live Compose profile. [Deployment guide and cost estimates](docs/deployment.md)
+
+![Taskflow desktop overview with sample job counts, throughput, and outcomes](docs/images/taskflow-desktop.jpg)
+
+<details>
+<summary>Mobile job details</summary>
+
+<img src="docs/images/taskflow-mobile.jpg" width="390" alt="Taskflow failed CSV job and attempt details on mobile">
+
+</details>
+
 ## Quick start
 
 Install Docker with the Compose plugin, then run the following from the repository root.
@@ -17,7 +35,7 @@ Compose runs the Alembic migration before starting the API and workers. Open **T
 
 - Select **New job** to enter text or upload a sales CSV. The details panel follows the job through processing and shows the result or validation error. Whitespace-only word-count input exercises retries and failure.
 - In **Jobs**, search by ID or job type, filter by status, and use the page controls. Open a row to inspect timestamps, the latest error, retry scheduling, and recorded attempts.
-- In **Overview**, the five job counts represent all stored jobs. Select a time range for recent throughput, terminal outcomes, and average processing time. **Analytics** adds duration percentiles, retry and failure counts, and a recorded comparison of throughput and latency with 1, 2, and 4 workers. Each open view polls every five seconds after its last response and labels stale data when the API becomes unavailable.
+- In **Overview**, the five job counts represent retained history. Select a time range for recent throughput, terminal outcomes, and average processing time. **Analytics** adds duration percentiles, retry and failure counts, and a recorded comparison of throughput and latency with 1, 2, and 4 workers. Each open view polls every five seconds after its last response and labels stale data when the API becomes unavailable.
 
 Throughput uses submission timestamps for submissions and terminal timestamps for outcomes. Success and failure rates divide each terminal outcome count by all terminal jobs in that range. Duration statistics use measured attempts started in the range and include handler process startup and cleanup. Queue wait, backoff, and abandoned attempts are excluded. Recent retry counts use recorded attempt numbers. Jobs from before migration `0002` keep their job counts, outcomes, and total attempts. Per-attempt timing and history accumulate from the migration onward.
 
@@ -31,6 +49,18 @@ npm run dev
 ```
 
 Open <http://localhost:5173>. Vite forwards `/api` to localhost port 8000. Set `DASHBOARD_API_TARGET` to the API origin when using a different port. The built frontend uses Nginx to forward the same paths to FastAPI on the Compose network.
+
+## Run the read-only demo
+
+From `frontend/`, build with Node.js 24. The demo loads a synthetic dataset and the recorded benchmark JSON directly from its bundle. It makes no API requests and provides no submission controls.
+
+```sh
+npm ci
+VITE_TASKFLOW_DEMO=true npm run build
+VITE_TASKFLOW_DEMO=true npm exec vite preview -- --host 127.0.0.1
+```
+
+Open `http://127.0.0.1:4173`. For an approved static deployment, serve only `frontend/dist` from the demo build. The live setup uses the standard build and its same-origin API proxy. [Hosting and launch guide](docs/deployment.md)
 
 ## API
 
@@ -237,5 +267,13 @@ Observed in a local Linux Compose run with the settings above. Times vary with h
 - Delivery remains **at least once**. If a process pause or database outage outlasts the lease, another worker can start a retry while the original handler is running. PostgreSQL rejects stale outcomes, but effects already performed by a handler can repeat. Use idempotency keys or transactional safeguards for external effects.
 - Timeouts control the direct handler process. Handlers run with the worker's privileges and must manage any descendant processes they launch. The deadline cannot undo side effects or bound time spent waiting in the queue, on backoff, or for infrastructure recovery.
 - Redis can receive repeated notifications during a backlog or broker interruption. The PostgreSQL claim and retry schedule govern which notifications can start an attempt.
-- Compose uses a single PostgreSQL instance and a single Redis instance. The API is intended for local use without authentication, and stored job history has no automatic retention policy.
+- The default Compose stack is for local development. The protected deployment profile applies authentication and retention on a single host with one PostgreSQL instance and one Redis instance. [Deployment guide](docs/deployment.md)
 - The live indicator reflects API connectivity. Worker presence and capacity require independent worker telemetry. Offset pages can shift when jobs arrive or change status, and aggregate queries read the current PostgreSQL data on each refresh.
+
+
+## Interview walkthrough
+
+1. Open the read-only demo. Filter **Jobs** to **Failed**, inspect the row-specific CSV error, then open a completed job with two attempts. Explain how PostgreSQL stores the authoritative state and Redis distributes notifications.
+2. On a local live stack, submit the sample CSV. Open the result and describe how one worker claims each attempt under a database lock. A child-process deadline bounds work. The lease identifies the worker that can write the outcome, and retry backoff gives transient failures time to clear.
+3. Open **Analytics** and compare 1, 2, and 4 workers. Explain that each configuration ran two identical bursts after warmup, with queue wait and latency derived from persisted timestamps. Discuss why two workers performed best on the tested host and how omitting unused CSV data reduced PostgreSQL read latency.
+4. Close with the trade-offs. A static public demo costs nothing to run and cannot enqueue work. The private live profile keeps the data services off public ports and adds authentication, quotas, and retention on one VM.

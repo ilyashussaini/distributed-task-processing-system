@@ -1,4 +1,5 @@
 import type { Attempt, Job, JobPage, JobStatus, Overview, TimeWindow } from './types'
+import { demoDetails, demoJobs, demoOverview, isDemoMode } from './demo'
 
 export class RequestError extends Error {
   readonly disconnected: boolean
@@ -10,6 +11,7 @@ export class RequestError extends Error {
 }
 
 async function request<T>(path: string, signal?: AbortSignal, init?: RequestInit): Promise<T> {
+  if (isDemoMode()) throw new RequestError('The portfolio demo is read-only.')
   const timeout = AbortSignal.timeout(8000)
   let response: Response
   try {
@@ -38,19 +40,26 @@ async function request<T>(path: string, signal?: AbortSignal, init?: RequestInit
 }
 
 export const getOverview = (window: TimeWindow, signal: AbortSignal) =>
-  request<Overview>(`/monitoring/overview?window=${window}`, signal)
+  isDemoMode() ? Promise.resolve(demoOverview(window)) : request<Overview>(`/monitoring/overview?window=${window}`, signal)
 
 export function getJobs(
   limit: number, offset: number, query: string, status: JobStatus | '', signal: AbortSignal,
 ) {
+  if (isDemoMode()) return Promise.resolve(demoJobs(limit, offset, query, status))
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
   if (query) params.set('q', query)
   if (status) params.set('status', status)
   return request<JobPage>(`/monitoring/jobs?${params}`, signal)
 }
 
-export const getJobDetails = (id: string, signal: AbortSignal) =>
-  request<{ job: Job; attempts: Attempt[] }>(`/monitoring/jobs/${id}`, signal)
+export async function getJobDetails(id: string, signal: AbortSignal): Promise<{ job: Job; attempts: Attempt[] }> {
+  if (isDemoMode()) {
+    const details = demoDetails(id)
+    if (!details) throw new RequestError('Sample job not found.')
+    return details
+  }
+  return request(`/monitoring/jobs/${id}`, signal)
+}
 
 export const submitWordCount = (text: string) => request<Job>('/jobs', undefined, {
   method: 'POST',
