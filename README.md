@@ -57,11 +57,11 @@ flowchart LR
 
 1. **Submit.** The API commits the job and its dispatch deadline in PostgreSQL before returning. Submission can continue during a Redis outage.
 2. **Dispatch.** Workers select due pending jobs with `FOR UPDATE SKIP LOCKED` and publish their IDs to a Redis stream. One consumer group shares deliveries across workers. A failed publish rolls back the dispatch transaction. Jobs that remain pending become eligible for redispatch after the configured interval.
-3. **Execute.** Workers independently read deliveries and claim jobs using PostgreSQL row locks. A claim moves the job to `running`, increments its attempt count, and starts a lease. The worker renews the lease every third of its duration while the job runs. Each worker runs one job at a time. Two replicas can execute two distinct jobs concurrently.
-4. **Record.** A worker with a live lease commits the result or failure before acknowledging the delivery it used to start the job. Failures either schedule a retry with capped exponential backoff or become terminal. The `completed_at` timestamp marks either terminal state.
+3. **Execute.** Workers independently read deliveries and claim jobs using PostgreSQL row locks. A claim moves the job to `running`, increments its attempt count, and starts a lease. The worker renews the lease while one handler runs in a separate Python process. Two worker replicas can execute two jobs concurrently.
+4. **Record.** The worker terminates and reaps the child when the execution deadline elapses. A worker with a live lease commits the outcome before acknowledging the delivery it used to start the job. Timeouts follow the same capped exponential backoff as other failures. The `completed_at` timestamp marks either terminal state.
 5. **Recover.** Workers reclaim idle Redis deliveries and reschedule jobs whose database leases expire. PostgreSQL checks the attempt number and lease expiry before accepting a renewal, result, or failure. Duplicate notifications for running or terminal jobs, or jobs still in backoff, can be acknowledged safely because PostgreSQL retains the job and its schedule.
 
-Delivery is **at least once**. Handlers should be idempotent because a job can run again after an attempt loses its lease before recording an outcome. The word-count handler is pure and its input is capped at 100,000 characters.
+Worker logs are JSON lines. Filter by `job_id` and `attempt` to follow the handler process, timeout, retry, lease recovery, and final outcome across replicas. Timeout events include the child PID and exit code. The word-count handler is pure and its input is capped at 100,000 characters.
 
 ## Configuration
 
@@ -75,6 +75,8 @@ Copy `.env.example` for local development. Shell environment variables override 
 | `REDIS_URL` | Localhost on the host, `redis://redis:6379/0` in Compose | Redis connection URL |
 | `REDIS_STREAM` | `task-system:jobs` | Stream shared by workers in the same deployment |
 | `MAX_ATTEMPTS` | `3` | Total attempts including the first. Saved per job at submission. |
+| `ATTEMPT_TIMEOUT_SECONDS` | `30` | Wall-clock budget for each handler process, including interpreter startup |
+| `ENABLE_RECOVERY_DEMO` | `false` | Allow the API to accept synthetic recovery demo jobs |
 | `RETRY_BASE_SECONDS`, `RETRY_MAX_SECONDS` | `2`, `60` | Initial delay and maximum delay |
 | `LEASE_SECONDS` | `30` | Time from the last successful claim or renewal until an unfinished attempt can be recovered. Redis also uses this interval for reclaiming idle deliveries. |
 | `REDISPATCH_SECONDS` | `15` | Time before a pending job may be published again |
@@ -112,7 +114,7 @@ The integration suite runs migrations in isolated PostgreSQL schemas and uses un
 
 ## Continuous integration
 
-GitHub Actions runs on pull requests and pushes to `main`. The Python job runs Ruff and both pytest suites on Python 3.12 with PostgreSQL 17 and Redis 7 service containers. A separate GitHub-hosted job builds the Docker Compose images from a clean checkout without a build cache, starts two worker replicas, checks the migrated schema, and exercises successful and failed jobs over HTTP. Find both jobs in the pull request's **Checks** tab. [CI workflow](.github/workflows/ci.yml)
+GitHub Actions runs on pull requests and pushes to `main`. The Python job runs Ruff and both pytest suites on Python 3.12 with PostgreSQL 17 and Redis 7 service containers. A separate GitHub-hosted job builds the images from a clean checkout without a build cache, starts two workers, checks the schema, and runs the HTTP smoke test and recovery demo. Find both jobs in the pull request's **Checks** tab. [CI workflow](.github/workflows/ci.yml)
 
 Run the clean Compose build and smoke check from the repository root with the default local settings.
 
@@ -126,9 +128,34 @@ docker compose down
 
 Set `SMOKE_BASE_URL` when the API uses a different host port.
 
-## Milestone 1 limitations
+## Two-worker recovery demo
 
-- A process pause or database outage longer than the remaining lease can let another worker start a retry while the original handler is still executing. The database rejects stale results. Handlers with external side effects need their own idempotency keys or safeguards.
-- A responsive worker can keep renewing the lease of a hung handler until an operator stops the worker. Milestone 1 leaves execution deadlines and cancellation to the operator.
+Run this on an isolated Compose project with Python 3.12. The override enables demo jobs, gives each attempt a four-second deadline and a two-second renewable lease, and sets a one-second initial retry delay. The script sends `SIGKILL` to one worker container in the selected project during the worker-loss scenario and starts it again after verification.
+
+```sh
+export POSTGRES_PORT=15433 REDIS_PORT=16380 API_PORT=18001
+export SMOKE_BASE_URL=http://127.0.0.1:18001
+docker compose -p task-recovery-demo -f compose.yaml -f compose.recovery.yaml \
+  up -d --build --wait --scale worker=2
+python3.12 tests/recovery_demo.py --project task-recovery-demo --scenario timeout
+python3.12 tests/recovery_demo.py --project task-recovery-demo --scenario worker-loss
+docker compose -p task-recovery-demo logs --no-color --no-log-prefix worker
+docker compose -p task-recovery-demo -f compose.yaml -f compose.recovery.yaml down
+```
+
+The timeout scenario submits a job whose handler hangs on every attempt. The script matches the started child PID to its `SIGKILL` exit, verifies the job reaches `failed` after two attempts, and confirms an unrelated word-count job completed before the first deadline. In the worker-loss scenario the script waits for the first child to start, kills its container, and verifies the surviving worker completes an unrelated job and then recovers the abandoned job on attempt 2.
+
+Observed in a local Linux Compose run with the settings above. Times vary with heartbeat timing, polling, and host load.
+
+| Measurement | Observed | Measured from |
+| --- | --- | --- |
+| Hung child killed and reaped | 4.01 s | Child process start |
+| Abandoned lease recovered | 1.85 s | Return of the worker SIGKILL command |
+| Abandoned job completed on attempt 2 | 3.29 s | Return of the worker SIGKILL command |
+
+## Delivery limits
+
+- Delivery remains **at least once**. If a process pause or database outage outlasts the lease, another worker can start a retry while the original handler is running. PostgreSQL rejects stale outcomes, but effects already performed by a handler can repeat. Use idempotency keys or transactional safeguards for external effects.
+- Timeouts control the direct handler process. Handlers run with the worker's privileges and must manage any descendant processes they launch. The deadline cannot undo side effects or bound time spent waiting in the queue, on backoff, or for infrastructure recovery.
 - Redis can receive repeated notifications during a backlog or broker interruption. The PostgreSQL claim and retry schedule govern which notifications can start an attempt.
 - Compose uses a single PostgreSQL instance and a single Redis instance. The API is intended for local use without authentication, and stored job history has no automatic retention policy.

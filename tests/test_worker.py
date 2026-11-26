@@ -11,6 +11,7 @@ from sqlalchemy import func, select, update
 
 from task_system import worker as worker_module
 from task_system.api import create_app
+from task_system.execution import AttemptProcessError
 from task_system.jobs import run_job
 from task_system.models import Job, JobStatus
 
@@ -61,12 +62,12 @@ def test_two_workers_can_run_distinct_jobs_concurrently(store, worker_factory, m
     started = Barrier(3)
     release = Event()
 
-    def wait_and_run(job_type, payload):
+    def wait_and_run(_job_id, job_type, payload, _attempt, _timeout):
         started.wait(timeout=5)
         assert release.wait(timeout=5)
         return run_job(job_type, payload)
 
-    monkeypatch.setattr(worker_module, "run_job", wait_and_run)
+    monkeypatch.setattr(worker_module, "execute_attempt", wait_and_run)
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(worker.run_once) for worker in workers]
         try:
@@ -90,14 +91,14 @@ def test_heartbeats_keep_long_running_attempt_exclusive(store, worker_factory, m
     release = Event()
     calls = []
 
-    def slow_job(job_type, payload):
+    def slow_job(_job_id, job_type, payload, _attempt, _timeout):
         calls.append(job_type)
         if len(calls) == 1:
             started.set()
             assert release.wait(timeout=10)
         return run_job(job_type, payload)
 
-    monkeypatch.setattr(worker_module, "run_job", slow_job)
+    monkeypatch.setattr(worker_module, "execute_attempt", slow_job)
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(first.run_once)
         try:
@@ -166,10 +167,10 @@ def test_transient_handler_error_can_recover_on_retry(store, worker_factory, mon
     job = store.create("word_count", {"text": "retry succeeded"})
 
     def raise_error(*_args):
-        raise RuntimeError("internal details")
+        raise AttemptProcessError("internal details")
 
     with monkeypatch.context() as patch:
-        patch.setattr(worker_module, "run_job", raise_error)
+        patch.setattr(worker_module, "execute_attempt", raise_error)
         assert worker.run_once()
     assert store.get(job.id).error == "Unexpected job error."
     make_retry_due(store, job.id)
@@ -180,6 +181,30 @@ def test_transient_handler_error_can_recover_on_retry(store, worker_factory, mon
     assert complete.attempts == 2
     assert complete.error is None
     assert complete.result == {"word_count": 2}
+
+
+def test_execution_timeout_retries_and_worker_stays_available(store, worker_factory):
+    store.settings.attempt_timeout_seconds = 1
+    worker = worker_factory()
+    job = store.create("recovery_demo", {"mode": "abandon_first_attempt"})
+
+    before = database_time(store)
+    assert worker.run_once()
+    after = database_time(store)
+    pending = store.get(job.id)
+    assert pending.status == JobStatus.PENDING
+    assert pending.error == "Attempt exceeded its 1s execution deadline."
+    assert pending.attempts == 1
+    delay = timedelta(seconds=store.settings.retry_base_seconds)
+    assert before + delay <= pending.available_at <= after + delay
+    assert not worker.run_once()
+
+    make_retry_due(store, job.id)
+    assert worker.run_once()
+    completed = store.get(job.id)
+    assert completed.status == JobStatus.COMPLETED
+    assert completed.result == {"recovered_on_attempt": 2}
+    assert completed.error is None
 
 
 def test_failed_publish_rolls_back_dispatch_and_job_is_delivered(store, worker_factory):

@@ -13,7 +13,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from task_system.broker import Message, RedisBroker
 from task_system.config import Settings
 from task_system.db import make_engine, make_sessions
-from task_system.jobs import JobError, run_job
+from task_system.execution import AttemptProcessError, AttemptTimeout, execute_attempt
+from task_system.jobs import JobError
+from task_system.logging import WorkerLogFormatter, log_event
 from task_system.models import Job
 from task_system.store import JobStore
 
@@ -39,31 +41,47 @@ class Worker:
         try:
             job_id = UUID(message.job_id or "")
         except ValueError:
-            logger.warning("Discarding invalid Redis message %s", message.id)
+            log_event(logger, "invalid_message", level=logging.WARNING, message_id=message.id)
             return
 
         job = self.store.claim(job_id)
         if job is None:
             return
-        logger.info("Running job %s (attempt %s of %s)", job.id, job.attempts, job.max_attempts)
         with self._keep_lease_alive(job):
             self._execute(job)
 
     def _execute(self, job: Job) -> None:
+        fields = {"job_id": str(job.id), "attempt": job.attempts}
+        timeout = self.store.settings.attempt_timeout_seconds
+        log_event(logger, "attempt_started", job_type=job.type, timeout_seconds=timeout, **fields)
         try:
-            result = run_job(job.type, job.payload)
-        except JobError as exc:
-            logger.info("Job %s failed on attempt %s: %s", job.id, job.attempts, exc)
-            recorded = self.store.fail(job, str(exc))
-        except Exception:
-            logger.exception("Unexpected error executing job %s", job.id)
-            recorded = self.store.fail(job, "Unexpected job error.")
-        else:
-            recorded = self.store.complete(job, result)
-        if not recorded:
-            logger.warning(
-                "Discarding outcome for job %s after attempt %s lost its lease", job.id, job.attempts
+            result = execute_attempt(job.id, job.type, job.payload, job.attempts, timeout)
+        except AttemptTimeout as exc:
+            log_event(
+                logger, "attempt_timed_out", level=logging.WARNING,
+                child_pid=exc.pid, exit_code=exc.exit_code, timeout_seconds=timeout, **fields,
             )
+            self._record_failure(job, str(exc), "timeout")
+        except JobError as exc:
+            self._record_failure(job, str(exc), "handler_error")
+        except (AttemptProcessError, OSError) as exc:
+            log_event(logger, "handler_process_error", level=logging.ERROR, error=str(exc), **fields)
+            self._record_failure(job, "Unexpected job error.", "process_error")
+        else:
+            if self.store.complete(job, result):
+                log_event(logger, "attempt_completed", **fields)
+            else:
+                log_event(logger, "attempt_outcome_discarded", level=logging.WARNING, **fields)
+
+    def _record_failure(self, job: Job, error: str, reason: str) -> None:
+        fields = {"job_id": str(job.id), "attempt": job.attempts}
+        if self.store.fail(job, error):
+            log_event(
+                logger, "attempt_failed", reason=reason,
+                will_retry=job.attempts < job.max_attempts, **fields,
+            )
+        else:
+            log_event(logger, "attempt_outcome_discarded", level=logging.WARNING, **fields)
 
     @contextmanager
     def _keep_lease_alive(self, job: Job) -> Iterator[None]:
@@ -76,8 +94,9 @@ class Worker:
                     if not self.store.renew_lease(job):
                         return
                 except SQLAlchemyError as exc:
-                    logger.warning(
-                        "Could not renew lease for job %s (%s)", job.id, type(exc).__name__
+                    log_event(
+                        logger, "lease_renewal_failed", level=logging.WARNING,
+                        job_id=str(job.id), attempt=job.attempts, error_type=type(exc).__name__,
                     )
 
         thread = Thread(target=heartbeat, name="lease-heartbeat")
@@ -95,12 +114,18 @@ class Worker:
                 while not stop.is_set():
                     self.run_once()
             except (RedisError, SQLAlchemyError) as exc:
-                logger.warning("Worker dependency unavailable (%s). Retrying.", type(exc).__name__)
+                log_event(
+                    logger, "dependency_unavailable", level=logging.WARNING,
+                    error_type=type(exc).__name__,
+                )
                 stop.wait(1)
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    hostname = socket.gethostname()
+    handler = logging.StreamHandler()
+    handler.setFormatter(WorkerLogFormatter(hostname))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
     settings = Settings()
     engine = make_engine(settings)
     stop = Event()
@@ -110,8 +135,8 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, stop_worker)
     signal.signal(signal.SIGINT, stop_worker)
-    consumer = f"{socket.gethostname()}-{uuid4().hex}"
-    logger.info("Starting worker %s", consumer)
+    consumer = f"{hostname}-{uuid4().hex}"
+    log_event(logger, "worker_started", consumer=consumer)
     try:
         with Redis.from_url(
             settings.redis_url,

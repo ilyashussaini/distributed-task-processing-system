@@ -69,6 +69,10 @@ jobs:
           docker compose exec -T api alembic check
           python3 tests/compose_smoke.py
           test "$(docker compose ps --status running -q worker | wc -l)" -eq 2
+      - name: Exercise timeout and worker-loss recovery
+        run: |
+          docker compose -f compose.yaml -f compose.recovery.yaml up -d --no-build --wait --wait-timeout 120 --scale worker=2
+          python3 tests/recovery_demo.py --project distributed-task-system
       - name: Collect container logs on failure
         if: failure()
         run: |

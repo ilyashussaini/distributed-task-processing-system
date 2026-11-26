@@ -54,6 +54,15 @@ def test_get_handles_unknown_and_invalid_ids(client):
     assert client.get("/jobs/not-a-uuid").status_code == 422
 
 
+def test_recovery_demo_requires_opt_in(client, settings):
+    job = {"type": "recovery_demo", "payload": {"mode": "hang"}}
+    assert client.post("/jobs", json=job).status_code == 403
+    assert client.get("/jobs").json() == []
+
+    settings.enable_recovery_demo = True
+    assert client.post("/jobs", json=job).status_code == 202
+
+
 @pytest.mark.parametrize(
     "job",
     [
