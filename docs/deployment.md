@@ -60,10 +60,22 @@ The production profile publishes Caddy on ports 80 and 443. The data network is 
 
 4. Establish backups and restore checks. The production profile runs retention every six hours. It defaults to 30 days from terminal completion and removes the job, payload, result, and related attempts in batches. Pending and running jobs are preserved. Backup copies have their own retention.
 
+   Run the backup from the repository root. Use a private directory outside the checkout, such as `$HOME/.local/state/taskflow/backups`. The directory is accessible only to its owner, and each run creates a new owner-only dump file.
+
    ```sh
-   umask 077
-   docker compose --env-file deploy/.env -f deploy/compose.yaml \
-     exec -T postgres pg_dump -U tasks -d tasks -Fc > taskflow.dump
+   (
+     set -eu
+     umask 077
+     backup_dir="$HOME/.local/state/taskflow/backups"
+     install -d -m 700 "$backup_dir"
+     backup_file=$(mktemp "$backup_dir/taskflow-XXXXXXXX.dump")
+     if ! docker compose --env-file deploy/.env -f deploy/compose.yaml \
+       exec -T postgres pg_dump -U tasks -d tasks -Fc > "$backup_file"; then
+       rm -f -- "$backup_file"
+       exit 1
+     fi
+     printf 'Backup written to %s\n' "$backup_file"
+   )
    ```
 
    Store the dump off the VM in a protected destination and test restoring it into an isolated PostgreSQL instance. Schedule backups and configure alerts for disk usage, failed retention runs, Redis memory, API availability, and queue delay. Re-run the recovery demo on an isolated environment after infrastructure changes.

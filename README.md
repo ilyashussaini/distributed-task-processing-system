@@ -52,7 +52,7 @@ Open <http://localhost:5173>. Vite forwards `/api` to localhost port 8000. Set `
 
 ## Run the read-only demo
 
-From `frontend/`, build with Node.js 24. The demo loads a synthetic dataset and the recorded benchmark JSON directly from its bundle. It makes no API requests and provides no submission controls.
+From `frontend/`, build with Node.js 24. The read-only demo uses synthetic jobs, statuses, and activity charts. The benchmark comparison in **Analytics** uses recorded throughput and latency from actual test runs with 1, 2, and 4 workers on the same generated CSV workload. The demo makes no API requests and provides no submission controls. [Benchmark methodology and measured results](#performance-benchmark)
 
 ```sh
 npm ci

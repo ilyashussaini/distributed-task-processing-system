@@ -133,6 +133,17 @@ __pypackages__/
 celerybeat-schedule*
 celerybeat.pid
 
+# Local PostgreSQL backups
+*.dump
+*.dump.*
+*.backup
+*.backup.*
+*.sql.gz
+*.sql.xz
+*.sql.zst
+taskflow.sql
+taskflow-*.sql
+
 # Redis
 *.rdb
 *.aof
