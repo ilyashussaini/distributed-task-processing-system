@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires PostgreSQL and, for worker tests, Redis",
+]
