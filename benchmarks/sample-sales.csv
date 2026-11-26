@@ -1,0 +1,5 @@
+order_id,region,quantity,unit_price
+order-001,West,2,12.50
+order-002,North,1,35.25
+order-003,West,3,8.50
+order-004,"South, East",4,4.99

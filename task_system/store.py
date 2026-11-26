@@ -5,7 +5,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, defer, sessionmaker
 
 from task_system.config import Settings
 from task_system.jobs import retry_delay
@@ -33,13 +33,14 @@ class JobStore:
             session.add(job)
         return job
 
-    def get(self, job_id: UUID) -> Job | None:
+    def get(self, job_id: UUID, *, include_payload: bool = True) -> Job | None:
         with self.sessions() as session:
-            return session.get(Job, job_id)
+            options = () if include_payload else (defer(Job.payload),)
+            return session.get(Job, job_id, options=options)
 
     def list_jobs(self, limit: int, offset: int) -> list[Job]:
         with self.sessions() as session:
-            query = select(Job).order_by(Job.created_at.desc(), Job.id.desc())
+            query = select(Job).options(defer(Job.payload)).order_by(Job.created_at.desc(), Job.id.desc())
             return list(session.scalars(query.limit(limit).offset(offset)))
 
     def dispatch_due(self, publish: Callable[[list[UUID]], None]) -> int:
@@ -92,13 +93,15 @@ class JobStore:
             self._finish_attempt(session, job, now, AttemptStatus.COMPLETED, duration_ms=duration_ms)
             return True
 
-    def fail(self, claim: Job, error: str, *, duration_ms: float | None = None) -> bool:
+    def fail(
+        self, claim: Job, error: str, *, duration_ms: float | None = None, retryable: bool = True,
+    ) -> bool:
         with self.sessions.begin() as session:
             attempt = self._lock_live_attempt(session, claim)
             if attempt is None:
                 return False
             job, now = attempt
-            self._record_failure(job, error, now)
+            self._record_failure(job, error, now, retryable=retryable)
             self._finish_attempt(
                 session, job, now, AttemptStatus.FAILED, duration_ms=duration_ms, error=error,
             )
@@ -118,6 +121,7 @@ class JobStore:
             now = session.scalar(select(func.now()))
             query = (
                 select(Job)
+                .options(defer(Job.payload))
                 .where(Job.status == JobStatus.RUNNING, Job.lease_expires_at <= now)
                 .order_by(Job.lease_expires_at, Job.id)
                 .limit(self.settings.dispatch_batch_size)
@@ -137,7 +141,7 @@ class JobStore:
 
     @staticmethod
     def _lock_live_attempt(session: Session, claim: Job) -> tuple[Job, datetime] | None:
-        job = session.get(Job, claim.id, with_for_update=True)
+        job = session.get(Job, claim.id, options=(defer(Job.payload),), with_for_update=True)
         if (
             job is None
             or job.status != JobStatus.RUNNING
@@ -151,10 +155,10 @@ class JobStore:
             return None
         return job, now
 
-    def _record_failure(self, job: Job, error: str, now: datetime) -> None:
+    def _record_failure(self, job: Job, error: str, now: datetime, *, retryable: bool = True) -> None:
         job.error = error
         job.lease_expires_at = None
-        if job.attempts >= job.max_attempts:
+        if not retryable or job.attempts >= job.max_attempts:
             job.status = JobStatus.FAILED
             job.completed_at = now
             return
