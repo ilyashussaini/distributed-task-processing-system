@@ -1,6 +1,6 @@
 # Distributed Task Processing System
 
-A Python 3.12 backend for submitting, executing, and tracking background jobs. FastAPI accepts requests, PostgreSQL stores job state and results via SQLAlchemy, and Redis Streams distributes jobs across worker processes. The first job type, `word_count`, counts whitespace-separated words.
+A distributed background job processor with a React and TypeScript monitoring dashboard. FastAPI accepts requests, PostgreSQL stores job and attempt state via SQLAlchemy, and Redis Streams distributes jobs across Python 3.12 workers. The `word_count` job counts whitespace-separated words.
 
 ## Quick start
 
@@ -11,7 +11,26 @@ cp .env.example .env
 docker compose up -d --build --wait --scale worker=2
 ```
 
-Compose runs the Alembic migration before starting the API and workers. Open the interactive API docs at <http://localhost:8000/docs>. Use `docker compose logs -f api worker` to see requests and job attempts. Run `docker compose down` to stop the stack and retain its named data volumes.
+Compose runs the Alembic migration before starting the API and workers. Open **Taskflow** at <http://localhost:3000> or the interactive API docs at <http://localhost:8000/docs>. Use `docker compose logs -f api worker` to see requests and job attempts. Run `docker compose down` to stop the stack and retain its named data volumes.
+
+## Monitoring dashboard
+
+- Select **New job**, enter text, and submit it. The details panel follows the job through processing and shows the final word count or error. Whitespace-only input exercises retries and failure.
+- In **Jobs**, search by ID or job type, filter by status, and use the page controls. Open a row to inspect timestamps, the latest error, retry scheduling, and recorded attempts.
+- In **Overview**, the five job counts represent all stored jobs. Select a time range for recent throughput, terminal outcomes, and average processing time. **Analytics** adds a completion-rate chart, duration percentiles, and retry and failure counts. Each open view polls every five seconds after its last response and labels stale data when the API becomes unavailable.
+
+Throughput uses submission timestamps for submissions and terminal timestamps for outcomes. Success and failure rates divide each terminal outcome count by all terminal jobs in that range. Duration statistics use measured attempts started in the range and include handler process startup and cleanup. Queue wait, backoff, and abandoned attempts are excluded. Recent retry counts use recorded attempt numbers. Jobs from before migration `0002` keep their job counts, outcomes, and total attempts. Per-attempt timing and history accumulate from the migration onward.
+
+For frontend development with Node.js 24, start the API and workers in Compose, then run Vite locally.
+
+```sh
+docker compose up -d --build --wait --scale worker=2 api worker
+cd frontend
+npm ci
+npm run dev
+```
+
+Open <http://localhost:5173>. Vite forwards `/api` to localhost port 8000. Set `DASHBOARD_API_TARGET` to the API origin when using a different port. The built frontend uses Nginx to forward the same paths to FastAPI on the Compose network.
 
 ## API
 
@@ -20,6 +39,9 @@ Compose runs the Alembic migration before starting the API and workers. Open the
 | POST | `/jobs` | `202 Accepted` with the job, a UUID, and a `Location` header |
 | GET | `/jobs/{id}` | `200 OK` with current status, attempts, timestamps, result, and last error. Unknown UUIDs return `404`. |
 | GET | `/jobs?limit=20&offset=0` | `200 OK` with a newest-first list of jobs. The maximum limit is 100. |
+| GET | `/monitoring/overview?window=24h` | Lifetime counts, ranged performance statistics, and time buckets. Windows are `1h`, `24h`, `7d`, and `30d`. |
+| GET | `/monitoring/jobs` | Jobs and matching total, with optional `limit`, `offset`, `status`, and `q` filters. |
+| GET | `/monitoring/jobs/{id}` | The job and its recorded attempts from the same database snapshot. |
 
 Submit a job, then poll its resource until it reaches a terminal state.
 
@@ -47,7 +69,8 @@ Follow the returned `Location`. With default settings, retries are scheduled app
 
 ```mermaid
 flowchart LR
-    Client -->|Submit or query| API[FastAPI]
+    Browser --> Dashboard[React dashboard / Nginx]
+    Dashboard -->|Submit or query| API[FastAPI]
     API -->|Persist and query jobs| DB[(PostgreSQL)]
     W1[Worker 1] <-->|Schedule, claim, and record| DB
     W2[Worker 2] <-->|Schedule, claim, and record| DB
@@ -65,12 +88,12 @@ Worker logs are JSON lines. Filter by `job_id` and `attempt` to follow the handl
 
 ## Configuration
 
-Copy `.env.example` for local development. Shell environment variables override values from `.env`. Compose publishes PostgreSQL, Redis, and the API on loopback.
+Copy `.env.example` for local development. Shell environment variables override values from `.env`. Compose publishes PostgreSQL, Redis, the API, and the dashboard on loopback.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | `tasks`, `local-dev-password`, `tasks` | Local database credentials and name |
-| `POSTGRES_PORT`, `REDIS_PORT`, `API_PORT` | `5432`, `6379`, `8000` | Published host ports |
+| `POSTGRES_PORT`, `REDIS_PORT`, `API_PORT`, `DASHBOARD_PORT` | `5432`, `6379`, `8000`, `3000` | Published host ports |
 | `DATABASE_URL` | Built from `POSTGRES_*` settings | Optional PostgreSQL URL for host processes. Use the `postgresql+psycopg://` scheme. |
 | `REDIS_URL` | Localhost on the host, `redis://redis:6379/0` in Compose | Redis connection URL |
 | `REDIS_STREAM` | `task-system:jobs` | Stream shared by workers in the same deployment |
@@ -110,11 +133,19 @@ TEST_REDIS_URL=redis://127.0.0.1:6379/0 \
   python -m pytest -ra
 ```
 
-The integration suite runs migrations in isolated PostgreSQL schemas and uses unique Redis stream keys. The database user needs permission to create schemas. Tests for a service skip if its test URL is unset. They fail if the configured service is unreachable. The suite covers API validation and persistence, concurrent execution, retries, lease renewal and expiry, duplicate delivery, and worker recovery.
+The integration suite runs migrations in isolated PostgreSQL schemas and uses unique Redis stream keys. The database user needs permission to create schemas. Tests for a service skip if its test URL is unset. They fail if the configured service is unreachable. The suite covers API validation, monitoring aggregates, attempt timing, retries, duplicate delivery, and worker recovery.
+
+```sh
+cd frontend
+npm ci
+npm run lint
+npm test
+npm run build
+```
 
 ## Continuous integration
 
-GitHub Actions runs on pull requests and pushes to `main`. The Python job runs Ruff and both pytest suites on Python 3.12 with PostgreSQL 17 and Redis 7 service containers. A separate GitHub-hosted job builds the images from a clean checkout without a build cache, starts two workers, checks the schema, and runs the HTTP smoke test and recovery demo. Find both jobs in the pull request's **Checks** tab. [CI workflow](.github/workflows/ci.yml)
+GitHub Actions runs on pull requests and pushes to `main`. The Python job runs Ruff and pytest with PostgreSQL 17 and Redis 7. The frontend job runs ESLint, Vitest, TypeScript, and the Vite production build. A separate job builds the Compose images from a clean checkout, checks the schema, then runs smoke tests and the two-worker recovery demo. Find all three jobs in the pull request's **Checks** tab. [CI workflow](.github/workflows/ci.yml)
 
 Run the clean Compose build and smoke check from the repository root with the default local settings.
 
@@ -123,6 +154,7 @@ docker compose build --pull --no-cache
 docker compose up -d --no-build --wait --scale worker=2
 docker compose exec -T api alembic check
 python3 tests/compose_smoke.py
+SMOKE_BASE_URL=http://127.0.0.1:3000/api python3 tests/dashboard_smoke.py
 docker compose down
 ```
 
@@ -133,7 +165,7 @@ Set `SMOKE_BASE_URL` when the API uses a different host port.
 Run this on an isolated Compose project with Python 3.12. The override enables demo jobs, gives each attempt a four-second deadline and a two-second renewable lease, and sets a one-second initial retry delay. The script sends `SIGKILL` to one worker container in the selected project during the worker-loss scenario and starts it again after verification.
 
 ```sh
-export POSTGRES_PORT=15433 REDIS_PORT=16380 API_PORT=18001
+export POSTGRES_PORT=15433 REDIS_PORT=16380 API_PORT=18001 DASHBOARD_PORT=18004
 export SMOKE_BASE_URL=http://127.0.0.1:18001
 docker compose -p task-recovery-demo -f compose.yaml -f compose.recovery.yaml \
   up -d --build --wait --scale worker=2
@@ -159,3 +191,4 @@ Observed in a local Linux Compose run with the settings above. Times vary with h
 - Timeouts control the direct handler process. Handlers run with the worker's privileges and must manage any descendant processes they launch. The deadline cannot undo side effects or bound time spent waiting in the queue, on backoff, or for infrastructure recovery.
 - Redis can receive repeated notifications during a backlog or broker interruption. The PostgreSQL claim and retry schedule govern which notifications can start an attempt.
 - Compose uses a single PostgreSQL instance and a single Redis instance. The API is intended for local use without authentication, and stored job history has no automatic retention policy.
+- The live indicator reflects API connectivity. Worker presence and capacity require independent worker telemetry. Offset pages can shift when jobs arrive or change status, and aggregate queries read the current PostgreSQL data on each refresh.
