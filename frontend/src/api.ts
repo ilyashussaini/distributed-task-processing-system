@@ -57,3 +57,9 @@ export const submitWordCount = (text: string) => request<Job>('/jobs', undefined
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ type: 'word_count', payload: { text } }),
 })
+
+export const submitCsv = (file: File) => request<Job>('/jobs/csv', undefined, {
+  method: 'POST',
+  headers: { 'Content-Type': 'text/csv' },
+  body: file,
+})

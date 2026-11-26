@@ -1,0 +1,316 @@
+{
+  "recorded_at": "2026-11-26T09:38:47.623072+00:00",
+  "workload": {
+    "jobs_per_run": 48,
+    "rows_per_file": 6000,
+    "csv_bytes": 175563,
+    "sha256": "cf84a0abe763ac5f8d4ea7566b945143580bb7f8d4f0e46b0179432651c4ceb7",
+    "concurrency": 8,
+    "repetitions": 2,
+    "warmup_jobs": 6
+  },
+  "configurations": [
+    {
+      "replicas": 1,
+      "summary": {
+        "requested": 96,
+        "submission_errors": 0,
+        "unfinished": 0,
+        "completed": 96,
+        "failed": 0,
+        "failure_rate": 0.0,
+        "elapsed_seconds": 44.147,
+        "jobs_per_second": 2.175,
+        "queue_wait_ms": {
+          "samples": 96,
+          "p50": 11502.684,
+          "p95": 21650.63,
+          "p99": 23021.646
+        },
+        "end_to_end_ms": {
+          "samples": 96,
+          "p50": 11917.29,
+          "p95": 22072.005,
+          "p99": 23380.842
+        },
+        "first_attempt_execution_ms": {
+          "samples": 96,
+          "p50": 390.273,
+          "p95": 619.242,
+          "p99": 777.2
+        }
+      },
+      "runs": [
+        {
+          "requested": 48,
+          "submission_errors": 0,
+          "unfinished": 0,
+          "completed": 48,
+          "failed": 0,
+          "failure_rate": 0.0,
+          "elapsed_seconds": 24.428,
+          "jobs_per_second": 1.965,
+          "queue_wait_ms": {
+            "samples": 48,
+            "p50": 13825.095,
+            "p95": 22509.631,
+            "p99": 23192.42
+          },
+          "end_to_end_ms": {
+            "samples": 48,
+            "p50": 14275.028,
+            "p95": 22874.754,
+            "p99": 23581.193
+          },
+          "first_attempt_execution_ms": {
+            "samples": 48,
+            "p50": 428.151,
+            "p95": 700.109,
+            "p99": 1207.731
+          }
+        },
+        {
+          "requested": 48,
+          "submission_errors": 0,
+          "unfinished": 0,
+          "completed": 48,
+          "failed": 0,
+          "failure_rate": 0.0,
+          "elapsed_seconds": 19.719,
+          "jobs_per_second": 2.434,
+          "queue_wait_ms": {
+            "samples": 48,
+            "p50": 9350.211,
+            "p95": 17922.039,
+            "p99": 18621.39
+          },
+          "end_to_end_ms": {
+            "samples": 48,
+            "p50": 9846.927,
+            "p95": 18256.182,
+            "p99": 19046.434
+          },
+          "first_attempt_execution_ms": {
+            "samples": 48,
+            "p50": 369.759,
+            "p95": 521.805,
+            "p99": 586.588
+          }
+        }
+      ]
+    },
+    {
+      "replicas": 2,
+      "summary": {
+        "requested": 96,
+        "submission_errors": 0,
+        "unfinished": 0,
+        "completed": 96,
+        "failed": 0,
+        "failure_rate": 0.0,
+        "elapsed_seconds": 29.082,
+        "jobs_per_second": 3.301,
+        "queue_wait_ms": {
+          "samples": 96,
+          "p50": 7113.356,
+          "p95": 13165.372,
+          "p99": 13617.588
+        },
+        "end_to_end_ms": {
+          "samples": 96,
+          "p50": 7879.903,
+          "p95": 13693.209,
+          "p99": 14106.073
+        },
+        "first_attempt_execution_ms": {
+          "samples": 96,
+          "p50": 535.09,
+          "p95": 794.797,
+          "p99": 869.122
+        }
+      },
+      "runs": [
+        {
+          "requested": 48,
+          "submission_errors": 0,
+          "unfinished": 0,
+          "completed": 48,
+          "failed": 0,
+          "failure_rate": 0.0,
+          "elapsed_seconds": 14.546,
+          "jobs_per_second": 3.3,
+          "queue_wait_ms": {
+            "samples": 48,
+            "p50": 7147.937,
+            "p95": 13307.683,
+            "p99": 13693.192
+          },
+          "end_to_end_ms": {
+            "samples": 48,
+            "p50": 7879.903,
+            "p95": 13720.871,
+            "p99": 14085.988
+          },
+          "first_attempt_execution_ms": {
+            "samples": 48,
+            "p50": 521.154,
+            "p95": 802.919,
+            "p99": 881.089
+          }
+        },
+        {
+          "requested": 48,
+          "submission_errors": 0,
+          "unfinished": 0,
+          "completed": 48,
+          "failed": 0,
+          "failure_rate": 0.0,
+          "elapsed_seconds": 14.536,
+          "jobs_per_second": 3.302,
+          "queue_wait_ms": {
+            "samples": 48,
+            "p50": 7113.356,
+            "p95": 13061.781,
+            "p99": 13596.785
+          },
+          "end_to_end_ms": {
+            "samples": 48,
+            "p50": 7913.176,
+            "p95": 13603.341,
+            "p99": 14094.042
+          },
+          "first_attempt_execution_ms": {
+            "samples": 48,
+            "p50": 556.678,
+            "p95": 773.369,
+            "p99": 826.236
+          }
+        }
+      ]
+    },
+    {
+      "replicas": 4,
+      "summary": {
+        "requested": 96,
+        "submission_errors": 0,
+        "unfinished": 0,
+        "completed": 96,
+        "failed": 0,
+        "failure_rate": 0.0,
+        "elapsed_seconds": 36.422,
+        "jobs_per_second": 2.636,
+        "queue_wait_ms": {
+          "samples": 96,
+          "p50": 8743.886,
+          "p95": 16134.845,
+          "p99": 18391.621
+        },
+        "end_to_end_ms": {
+          "samples": 96,
+          "p50": 9780.041,
+          "p95": 18398.095,
+          "p99": 19500.654
+        },
+        "first_attempt_execution_ms": {
+          "samples": 96,
+          "p50": 1356.306,
+          "p95": 2120.835,
+          "p99": 2256.369
+        }
+      },
+      "runs": [
+        {
+          "requested": 48,
+          "submission_errors": 0,
+          "unfinished": 0,
+          "completed": 48,
+          "failed": 0,
+          "failure_rate": 0.0,
+          "elapsed_seconds": 16.43,
+          "jobs_per_second": 2.921,
+          "queue_wait_ms": {
+            "samples": 48,
+            "p50": 7707.3,
+            "p95": 14397.866,
+            "p99": 15056.58
+          },
+          "end_to_end_ms": {
+            "samples": 48,
+            "p50": 9062.862,
+            "p95": 15574.959,
+            "p99": 15879.903
+          },
+          "first_attempt_execution_ms": {
+            "samples": 48,
+            "p50": 1247.177,
+            "p95": 1907.2,
+            "p99": 1978.207
+          }
+        },
+        {
+          "requested": 48,
+          "submission_errors": 0,
+          "unfinished": 0,
+          "completed": 48,
+          "failed": 0,
+          "failure_rate": 0.0,
+          "elapsed_seconds": 19.992,
+          "jobs_per_second": 2.401,
+          "queue_wait_ms": {
+            "samples": 48,
+            "p50": 9286.999,
+            "p95": 17786.421,
+            "p99": 18393.847
+          },
+          "end_to_end_ms": {
+            "samples": 48,
+            "p50": 11221.633,
+            "p95": 19101.469,
+            "p99": 19512.611
+          },
+          "first_attempt_execution_ms": {
+            "samples": 48,
+            "p50": 1632.514,
+            "p95": 2218.299,
+            "p99": 2314.477
+          }
+        }
+      ]
+    }
+  ],
+  "environment": {
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "cpu_model": "AMD EPYC 9V45 96-Core Processor",
+    "client_cpu_affinity": 3,
+    "client_cpu_quota": "200000 100000",
+    "client_memory_limit_bytes": "8589934592",
+    "docker_cpus": 3,
+    "docker_memory_bytes": 10452459520,
+    "docker_version": "29.9.2",
+    "compose_version": "2.40.3",
+    "python": "3.12.14",
+    "worker_python": "Python 3.12.16",
+    "worker_cpu_quota": "200000 100000",
+    "worker_memory_limit_bytes": "8589934592",
+    "postgres": "postgres (PostgreSQL) 17.12",
+    "redis": "Redis server v=7.4.12 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=97c9b7ac751c8f00",
+    "source_revision": "8f01576586716dd12a50a7443592fe541a97ccc8",
+    "benchmark_sources_dirty": false
+  },
+  "history_probe": {
+    "rows_per_read": 50,
+    "payload_bytes_per_full_read": 9078750,
+    "full_row_ms": {
+      "samples": 30,
+      "p50": 49.955,
+      "p95": 118.786,
+      "p99": 219.988
+    },
+    "metadata_only_ms": {
+      "samples": 30,
+      "p50": 0.821,
+      "p95": 3.797,
+      "p99": 16.55
+    }
+  }
+}

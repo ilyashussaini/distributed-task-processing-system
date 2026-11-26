@@ -1,6 +1,6 @@
 # Distributed Task Processing System
 
-A distributed background job processor with a React and TypeScript monitoring dashboard. FastAPI accepts requests, PostgreSQL stores job and attempt state via SQLAlchemy, and Redis Streams distributes jobs across Python 3.12 workers. The `word_count` job counts whitespace-separated words.
+A distributed background job processor with a React and TypeScript monitoring dashboard. FastAPI accepts requests, PostgreSQL stores job and attempt state via SQLAlchemy, and Redis Streams distributes jobs across Python 3.12 workers. Jobs include word counting and sales CSV validation and aggregation.
 
 ## Quick start
 
@@ -15,9 +15,9 @@ Compose runs the Alembic migration before starting the API and workers. Open **T
 
 ## Monitoring dashboard
 
-- Select **New job**, enter text, and submit it. The details panel follows the job through processing and shows the final word count or error. Whitespace-only input exercises retries and failure.
+- Select **New job** to enter text or upload a sales CSV. The details panel follows the job through processing and shows the result or validation error. Whitespace-only word-count input exercises retries and failure.
 - In **Jobs**, search by ID or job type, filter by status, and use the page controls. Open a row to inspect timestamps, the latest error, retry scheduling, and recorded attempts.
-- In **Overview**, the five job counts represent all stored jobs. Select a time range for recent throughput, terminal outcomes, and average processing time. **Analytics** adds a completion-rate chart, duration percentiles, and retry and failure counts. Each open view polls every five seconds after its last response and labels stale data when the API becomes unavailable.
+- In **Overview**, the five job counts represent all stored jobs. Select a time range for recent throughput, terminal outcomes, and average processing time. **Analytics** adds duration percentiles, retry and failure counts, and a recorded comparison of throughput and latency with 1, 2, and 4 workers. Each open view polls every five seconds after its last response and labels stale data when the API becomes unavailable.
 
 Throughput uses submission timestamps for submissions and terminal timestamps for outcomes. Success and failure rates divide each terminal outcome count by all terminal jobs in that range. Duration statistics use measured attempts started in the range and include handler process startup and cleanup. Queue wait, backoff, and abandoned attempts are excluded. Recent retry counts use recorded attempt numbers. Jobs from before migration `0002` keep their job counts, outcomes, and total attempts. Per-attempt timing and history accumulate from the migration onward.
 
@@ -37,6 +37,7 @@ Open <http://localhost:5173>. Vite forwards `/api` to localhost port 8000. Set `
 | Method | Path | Response |
 | --- | --- | --- |
 | POST | `/jobs` | `202 Accepted` with the job, a UUID, and a `Location` header |
+| POST | `/jobs/csv` | Accepts a UTF-8 sales CSV as the raw `text/csv` request body and returns the same job response. |
 | GET | `/jobs/{id}` | `200 OK` with current status, attempts, timestamps, result, and last error. Unknown UUIDs return `404`. |
 | GET | `/jobs?limit=20&offset=0` | `200 OK` with a newest-first list of jobs. The maximum limit is 100. |
 | GET | `/monitoring/overview?window=24h` | Lifetime counts, ranged performance statistics, and time buckets. Windows are `1h`, `24h`, `7d`, and `30d`. |
@@ -64,6 +65,20 @@ curl -i http://localhost:8000/jobs \
 ```
 
 Follow the returned `Location`. With default settings, retries are scheduled approximately 2 and 4 seconds after the first and second failures. During backoff the job is `pending` and exposes `next_attempt_at` and the last error. After the final attempt, status becomes `failed` and `completed_at` is set.
+
+## Sales CSV jobs
+
+Upload a [sample sales file](benchmarks/sample-sales.csv) in Taskflow or submit it through the API.
+
+```sh
+curl -i http://localhost:8000/jobs/csv \
+  -H 'Content-Type: text/csv' \
+  --data-binary @benchmarks/sample-sales.csv
+```
+
+Follow the returned `Location` to get order count, units sold, revenue, average order value, and the breakdown by region. Monetary results are two-decimal strings in the input currency, calculated in integer cents. The average rounds half up.
+
+The upload accepts at most 512 KiB of uncompressed UTF-8, optionally with a byte-order mark. The worker validates the exact header set `order_id,region,quantity,unit_price` in any order, up to 10,000 rows and 64 distinct regions. IDs must be unique and contain up to 64 ASCII letters, digits, underscores, dots, or hyphens, starting with a letter or digit. Regions may contain up to 64 printable characters. Quantity must be an integer from 1 to 1,000,000. Prices range from 0 to 1,000,000 with up to two decimal places. Invalid data fails once with a row-specific error when applicable. Worker loss and execution timeouts still use the existing retry policy. Uploaded data follows the same PostgreSQL retention as other job inputs.
 
 ## Architecture and delivery
 
@@ -159,6 +174,38 @@ docker compose down
 ```
 
 Set `SMOKE_BASE_URL` when the API uses a different host port.
+
+## Performance benchmark
+
+Run from the repository root with Docker Compose, the Python dependencies from `requirements.txt`, and three free host ports. The benchmark creates a separate Compose project and scales it to 1, 2, and 4 workers. It keeps the stack running so you can inspect the jobs before cleanup.
+
+```sh
+export API_PORT=18010 POSTGRES_PORT=15439 REDIS_PORT=16389
+python -m benchmarks.run --output /tmp/taskflow-benchmarks.json
+docker compose -p taskflow-benchmark down
+```
+
+The runner uses the sample database credentials by default. Set `BENCHMARK_DATABASE_URL` to a host-accessible PostgreSQL connection URL if you changed them. Use `python -m benchmarks.run --help` to change the workload. To refresh the charts with your own full matrix, write the report to `frontend/src/data/benchmark-results.json` and rebuild the frontend.
+
+Each configuration processes six warmup jobs and two measured bursts of 48 jobs with eight concurrent HTTP submissions. All 288 measured jobs use the same deterministic 6,000-row CSV. The runner records the file hash and uses read-only PostgreSQL observations scoped to the returned job IDs.
+
+- **Queue wait** runs from job creation to the start of its first attempt. **End-to-end latency** runs from job creation to the terminal timestamp. Both use PostgreSQL timestamps, so they exclude the observer's polling delay.
+- **Throughput** divides terminal jobs by the summed time from first creation to last terminal outcome in each burst. **Failure rate** divides failed jobs by observed terminal jobs. Submission errors and unfinished jobs have separate counts. Incomplete bursts suppress throughput and produce a failing command exit status.
+- Group percentiles pool both runs and use linear interpolation. The JSON includes per-run results, sample counts, first-attempt execution percentiles, and the environment. [Measured benchmark report](frontend/src/data/benchmark-results.json)
+
+### Measured results
+
+| Workers | Jobs/s | Queue wait p50 / p95 / p99 (s) | End-to-end p50 / p95 / p99 (s) | Failed / processed |
+| ---: | ---: | --- | --- | ---: |
+| 1 | 2.175 | 11.50 / 21.65 / 23.02 | 11.92 / 22.07 / 23.38 | 0 / 96 |
+| 2 | 3.301 | 7.11 / 13.17 / 13.62 | 7.88 / 13.69 / 14.11 | 0 / 96 |
+| 4 | 2.636 | 8.74 / 16.13 / 18.39 | 9.78 / 18.40 / 19.50 | 0 / 96 |
+
+The runs used a shared x86-64 Linux VM on an AMD EPYC 9V45. Docker reported three CPUs. The benchmark client and worker reported a two-CPU cgroup quota and an 8 GiB memory limit. The stack used Docker 29.9.2, Compose 2.40.3, Python 3.12.16 in the worker, PostgreSQL 17.12, and Redis 7.4.12. Each request uploaded 175,563 bytes. All 288 jobs were accepted and completed within the observation deadline.
+
+Two workers delivered the highest throughput in this test. First-attempt median execution rose from 535 ms with two workers to 1,356 ms with four, alongside a longer queue wait. This is consistent with contention on the shared host. The runs used two bursts per configuration on one machine with co-located services, so the result applies to this workload and resource budget. The measured failure rate describes valid inputs in these bursts.
+
+The database probe alternated 30 paired reads over the latest 50 jobs after warmup. Each full-row read retrieved 9,078,750 bytes of CSV payload text. At the PostgreSQL client boundary, p95 fell from 118.79 ms to 3.80 ms when the same reads omitted the payload. Job lists, detail views, and lease and outcome operations now omit inputs they do not use. Workers still load inputs when claiming a job. The latency comparison covers query transfer and decoding, while the scaling table measures whole job bursts with the projection in place.
 
 ## Two-worker recovery demo
 

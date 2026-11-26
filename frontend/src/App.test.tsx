@@ -50,6 +50,9 @@ function mockAPI() {
     if (url.pathname === '/api/jobs' && init?.method === 'POST') {
       return json({ ...completed, status: 'pending', attempts: 0, completed_at: null, result: null })
     }
+    if (url.pathname === '/api/jobs/csv' && init?.method === 'POST') {
+      return json({ ...completed, type: 'csv_sales_summary', status: 'pending', attempts: 0, completed_at: null, result: null })
+    }
     throw new Error(`Unexpected request ${url.pathname}`)
   })
   vi.stubGlobal('fetch', handler)
@@ -64,7 +67,7 @@ describe('monitoring dashboard', () => {
     const fetchMock = mockAPI()
     render(<App />)
     expect(await screen.findByText('14', { exact: true })).toBeTruthy()
-    expect(await screen.findByText('No activity in this range')).toBeTruthy()
+    expect(await screen.findByText('No activity in this range', undefined, { timeout: 3000 })).toBeTruthy()
     fireEvent.change(screen.getByRole('combobox', { name: 'Time range' }), { target: { value: '1h' } })
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/monitoring/overview?window=1h', expect.anything())
@@ -109,6 +112,39 @@ describe('monitoring dashboard', () => {
       }))
     })
     expect(await screen.findByRole('dialog', { name: 'Job details' })).toBeTruthy()
+  })
+
+  it('checks the file size and sends the actual CSV file to the upload endpoint', async () => {
+    const fetchMock = mockAPI()
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'New job' }))
+    const dialog = screen.getByRole('dialog', { name: 'Submit a job' })
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Job type' }), { target: { value: 'csv_sales_summary' } })
+    const field = within(dialog).getByLabelText('Sales CSV file')
+    const button = within(dialog).getByRole('button', { name: 'Submit job' }) as HTMLButtonElement
+    const oversized = new File([new Uint8Array(512 * 1024 + 1)], 'large.csv')
+    fireEvent.change(field, { target: { files: [oversized] } })
+    expect(button.disabled).toBe(true)
+    expect(within(dialog).getByText('The CSV file exceeds 512 KiB.')).toBeTruthy()
+
+    const file = new File(['order_id,region,quantity,unit_price\na,West,3,1.25\n'], 'sales.csv')
+    fireEvent.change(field, { target: { files: [file] } })
+    expect(button.disabled).toBe(false)
+    fireEvent.submit(button.form!)
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/jobs/csv', expect.objectContaining({
+        method: 'POST', body: file, headers: expect.objectContaining({ 'Content-Type': 'text/csv' }),
+      }))
+    })
+  })
+
+  it('shows the recorded benchmark configurations in analytics', async () => {
+    history.replaceState(null, '', '/#analytics')
+    mockAPI()
+    render(<App />)
+    const measurements = await screen.findByRole('region', { name: 'Benchmark measurements' }, { timeout: 3000 })
+    expect(within(measurements).getAllByRole('rowheader').map((cell) => cell.textContent)).toEqual(['1', '2', '4'])
+    expect(within(measurements).getByRole('columnheader', { name: 'E2E p99' })).toBeTruthy()
   })
 
   it('distinguishes an unavailable backend from an empty queue', async () => {

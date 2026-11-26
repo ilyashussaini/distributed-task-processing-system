@@ -1,10 +1,12 @@
 import { AlertCircle, FileText, LoaderCircle, X } from 'lucide-react'
 import { type FormEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
-import { getJobDetails, submitWordCount } from '../api'
+import { getJobDetails, submitCsv, submitWordCount } from '../api'
 import { formatCount, formatDuration, formatTimestamp, formatType } from '../format'
 import type { Job } from '../types'
 import { usePoll } from '../usePoll'
-import { ErrorNotice, Loading, StatusBadge } from './ui'
+import { ErrorNotice, Loading, Select, StatusBadge } from './ui'
+
+const csvLimit = 512 * 1024
 
 function Modal({ heading, onClose, drawer = false, children }: {
   heading: string
@@ -34,17 +36,24 @@ function Modal({ heading, onClose, drawer = false, children }: {
 }
 
 export function SubmitDialog({ onClose, onSubmitted }: { onClose: () => void; onSubmitted: (job: Job) => void }) {
+  const [type, setType] = useState('word_count')
   const [text, setText] = useState('')
+  const [file, setFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const csv = type === 'csv_sales_summary'
+  const fileError = file && (file.size === 0 ? 'Choose a nonempty CSV file.'
+    : file.size > csvLimit ? 'The CSV file exceeds 512 KiB.' : '')
+  const valid = csv ? file !== null && !fileError : text.length > 0
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (busy || text.length === 0) return
+    if (busy || !valid) return
     setBusy(true)
     setError('')
     try {
-      onSubmitted(await submitWordCount(text))
+      const job = csv && file ? await submitCsv(file) : await submitWordCount(text)
+      onSubmitted(job)
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'The job could not be submitted.')
       setBusy(false)
@@ -55,15 +64,31 @@ export function SubmitDialog({ onClose, onSubmitted }: { onClose: () => void; on
     <Modal heading="Submit a job" onClose={() => { if (!busy) onClose() }}>
       <form onSubmit={submit}>
         <div className="dialog-content">
-          <div className="submission-type"><span className="job-icon"><FileText size={18} /></span><div><strong>Word count</strong><p>Counts whitespace-separated words in your text.</p></div></div>
-          <label className="form-label" htmlFor="word-count-text">Text to count</label>
-          <textarea id="word-count-text" name="text" required maxLength={100000} rows={6} placeholder="Paste or type your text here…" value={text} onChange={(event) => setText(event.target.value)} />
-          <div className="char-count">{formatCount(text.length)} / 100,000 characters</div>
+          <div className="submission-type">
+            <label className="form-label" htmlFor="submission-job-type">Job type</label>
+            <Select id="submission-job-type" value={type} disabled={busy} onChange={(event) => {
+              setType(event.target.value); setError(''); setFile(null)
+            }}>
+              <option value="word_count">Word count</option>
+              <option value="csv_sales_summary">CSV sales summary</option>
+            </Select>
+          </div>
+          {csv ? <>
+            <label className="form-label" htmlFor="sales-csv">Sales CSV file</label>
+            <input className="csv-file" id="sales-csv" type="file" accept=".csv,text/csv" required aria-describedby="csv-help"
+              onChange={(event) => { setError(''); setFile(event.target.files?.[0] ?? null) }} />
+            <p className="field-help" id="csv-help">UTF-8, up to 512 KiB and 10,000 rows. Include <code>order_id</code>, <code>region</code>, <code>quantity</code>, and <code>unit_price</code>.</p>
+            {fileError && <p className="inline-error" role="alert"><AlertCircle size={17} />{fileError}</p>}
+          </> : <>
+            <label className="form-label" htmlFor="word-count-text">Text to count</label>
+            <textarea id="word-count-text" name="text" required maxLength={100000} rows={6} placeholder="Paste or type your text here…" value={text} onChange={(event) => setText(event.target.value)} />
+            <div className="char-count">{formatCount(text.length)} / 100,000 characters</div>
+          </>}
           {error && <p className="inline-error" role="alert"><AlertCircle size={17} />{error}</p>}
         </div>
         <footer className="dialog-actions">
           <button type="button" className="button" disabled={busy} onClick={onClose}>Cancel</button>
-          <button type="submit" className="button button-primary" disabled={busy || text.length === 0}>
+          <button type="submit" className="button button-primary" disabled={busy || !valid}>
             {busy && <LoaderCircle size={16} className="animate-spin" />}{busy ? 'Submitting' : 'Submit job'}
           </button>
         </footer>
@@ -74,6 +99,38 @@ export function SubmitDialog({ onClose, onSubmitted }: { onClose: () => void; on
 
 function DateValue({ date }: { date: string | null }) {
   return date ? <time dateTime={date}>{formatTimestamp(date)}</time> : '—'
+}
+
+interface SalesRegion {
+  region: string
+  orders: number
+  units_sold: number
+  revenue: string
+}
+
+function CsvResult({ result }: { result: Record<string, unknown> }) {
+  if (
+    typeof result.orders !== 'number' || typeof result.units_sold !== 'number'
+    || typeof result.revenue !== 'string' || typeof result.average_order_value !== 'string'
+    || !Array.isArray(result.regions)
+  ) return <pre>{JSON.stringify(result, null, 2)}</pre>
+
+  const regions = result.regions as SalesRegion[]
+  return <>
+    <dl className="csv-summary">
+      <div><dt>Orders</dt><dd>{formatCount(result.orders)}</dd></div>
+      <div><dt>Units sold</dt><dd>{formatCount(result.units_sold)}</dd></div>
+      <div><dt>Revenue</dt><dd>{result.revenue}</dd></div>
+      <div><dt>Average order value</dt><dd>{result.average_order_value}</dd></div>
+    </dl>
+    <div className="table-wrap csv-breakdown" tabIndex={0} role="region" aria-label="Sales by region">
+      <table className="job-table"><thead><tr>
+        <th scope="col">Region</th><th scope="col">Orders</th><th scope="col">Units</th><th scope="col">Revenue</th>
+      </tr></thead><tbody>{regions.map((region) => <tr key={region.region}>
+        <td>{region.region}</td><td>{formatCount(region.orders)}</td><td>{formatCount(region.units_sold)}</td><td>{region.revenue}</td>
+      </tr>)}</tbody></table>
+    </div>
+  </>
 }
 
 export function JobDetails({ initial, onClose }: { initial: Job; onClose: () => void }) {
@@ -103,6 +160,7 @@ export function JobDetails({ initial, onClose }: { initial: Job; onClose: () => 
         {job.result && <section className="detail-section">
           <h3>Result</h3>
           {wordCount !== null ? <p className="result-value"><strong>{formatCount(wordCount)}</strong> {wordCount === 1 ? 'word' : 'words'}</p>
+            : job.type === 'csv_sales_summary' ? <CsvResult result={job.result} />
             : <pre>{JSON.stringify(job.result, null, 2)}</pre>}
         </section>}
         <section className="detail-section">
