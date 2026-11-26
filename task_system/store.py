@@ -73,23 +73,33 @@ class JobStore:
 
     def complete(self, claim: Job, result: dict[str, Any]) -> bool:
         with self.sessions.begin() as session:
-            job = self._lock_attempt(session, claim)
-            if job is None:
+            attempt = self._lock_live_attempt(session, claim)
+            if attempt is None:
                 return False
+            job, now = attempt
             job.status = JobStatus.COMPLETED
             job.result = result
             job.error = None
-            job.completed_at = session.scalar(select(func.clock_timestamp()))
+            job.completed_at = now
             job.lease_expires_at = None
             return True
 
     def fail(self, claim: Job, error: str) -> bool:
         with self.sessions.begin() as session:
-            job = self._lock_attempt(session, claim)
-            if job is None:
+            attempt = self._lock_live_attempt(session, claim)
+            if attempt is None:
                 return False
-            now = session.scalar(select(func.clock_timestamp()))
+            job, now = attempt
             self._record_failure(job, error, now)
+            return True
+
+    def renew_lease(self, claim: Job) -> bool:
+        with self.sessions.begin() as session:
+            attempt = self._lock_live_attempt(session, claim)
+            if attempt is None:
+                return False
+            job, now = attempt
+            job.lease_expires_at = now + timedelta(seconds=self.settings.lease_seconds)
             return True
 
     def recover_expired(self) -> int:
@@ -108,15 +118,20 @@ class JobStore:
             return len(jobs)
 
     @staticmethod
-    def _lock_attempt(session: Session, claim: Job) -> Job | None:
+    def _lock_live_attempt(session: Session, claim: Job) -> tuple[Job, datetime] | None:
         job = session.get(Job, claim.id, with_for_update=True)
         if (
-            job is not None
-            and job.status == JobStatus.RUNNING
-            and job.attempts == claim.attempts
+            job is None
+            or job.status != JobStatus.RUNNING
+            or job.attempts != claim.attempts
+            or job.lease_expires_at is None
         ):
-            return job
-        return None
+            return None
+        # Check the database clock after acquiring the row lock.
+        now = session.scalar(select(func.clock_timestamp()))
+        if job.lease_expires_at <= now:
+            return None
+        return job, now
 
     def _record_failure(self, job: Job, error: str, now: datetime) -> None:
         job.error = error

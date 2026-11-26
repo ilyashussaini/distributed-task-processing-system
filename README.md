@@ -57,11 +57,11 @@ flowchart LR
 
 1. **Submit.** The API commits the job and its dispatch deadline in PostgreSQL before returning. Submission can continue during a Redis outage.
 2. **Dispatch.** Workers select due pending jobs with `FOR UPDATE SKIP LOCKED` and publish their IDs to a Redis stream. One consumer group shares deliveries across workers. A failed publish rolls back the dispatch transaction. Jobs that remain pending become eligible for redispatch after the configured interval.
-3. **Execute.** Workers independently read deliveries and claim jobs using PostgreSQL row locks. A claim moves the job to `running`, increments its attempt count, and starts a lease. Each worker runs one job at a time. Two replicas can execute two distinct jobs concurrently.
-4. **Record.** A worker commits the result or failure before acknowledging its Redis message. Failures either schedule a retry with capped exponential backoff or become terminal. The `completed_at` timestamp marks either terminal state.
-5. **Recover.** Workers reclaim abandoned Redis deliveries and reschedule jobs whose database leases expire. Completion and failure writes check the attempt number, so a superseded attempt cannot overwrite an active attempt or a terminal result.
+3. **Execute.** Workers independently read deliveries and claim jobs using PostgreSQL row locks. A claim moves the job to `running`, increments its attempt count, and starts a lease. The worker renews the lease every third of its duration while the job runs. Each worker runs one job at a time. Two replicas can execute two distinct jobs concurrently.
+4. **Record.** A worker with a live lease commits the result or failure before acknowledging the delivery it used to start the job. Failures either schedule a retry with capped exponential backoff or become terminal. The `completed_at` timestamp marks either terminal state.
+5. **Recover.** Workers reclaim idle Redis deliveries and reschedule jobs whose database leases expire. PostgreSQL checks the attempt number and lease expiry before accepting a renewal, result, or failure. Duplicate notifications for running or terminal jobs, or jobs still in backoff, can be acknowledged safely because PostgreSQL retains the job and its schedule.
 
-Delivery is **at least once**. A job can run again if a worker exits after executing the handler and before recording its outcome. Handlers should be idempotent and finish within the configured lease. The word-count handler is pure and its input is capped at 100,000 characters.
+Delivery is **at least once**. Handlers should be idempotent because a job can run again after an attempt loses its lease before recording an outcome. The word-count handler is pure and its input is capped at 100,000 characters.
 
 ## Configuration
 
@@ -76,7 +76,7 @@ Copy `.env.example` for local development. Shell environment variables override 
 | `REDIS_STREAM` | `task-system:jobs` | Stream shared by workers in the same deployment |
 | `MAX_ATTEMPTS` | `3` | Total attempts including the first. Saved per job at submission. |
 | `RETRY_BASE_SECONDS`, `RETRY_MAX_SECONDS` | `2`, `60` | Initial delay and maximum delay |
-| `LEASE_SECONDS` | `30` | Time before an unfinished attempt can be recovered |
+| `LEASE_SECONDS` | `30` | Time from the last successful claim or renewal until an unfinished attempt can be recovered. Redis also uses this interval for reclaiming idle deliveries. |
 | `REDISPATCH_SECONDS` | `15` | Time before a pending job may be published again |
 | `POLL_MS`, `DISPATCH_BATCH_SIZE` | `500`, `50` | Maximum idle Redis read wait and number of jobs scheduled per batch |
 
@@ -99,6 +99,7 @@ In a separate terminal with the same virtual environment active, run `python -m 
 python3.12 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements-dev.txt
+python -m ruff check .
 python -m pytest -m 'not integration'
 
 docker compose up -d --wait postgres redis
@@ -107,4 +108,27 @@ TEST_REDIS_URL=redis://127.0.0.1:6379/0 \
   python -m pytest -ra
 ```
 
-The integration suite runs migrations in isolated PostgreSQL schemas and uses unique Redis stream keys. The database user needs permission to create schemas. Tests for a service skip if its test URL is unset. They fail if the configured service is unreachable. The suite covers API validation and persistence, concurrent execution, retry timing and exhaustion, broker errors, duplicate delivery, and worker recovery.
+The integration suite runs migrations in isolated PostgreSQL schemas and uses unique Redis stream keys. The database user needs permission to create schemas. Tests for a service skip if its test URL is unset. They fail if the configured service is unreachable. The suite covers API validation and persistence, concurrent execution, retries, lease renewal and expiry, duplicate delivery, and worker recovery.
+
+## Continuous integration
+
+GitHub Actions runs on pull requests and pushes to `main`. The Python job runs Ruff and both pytest suites on Python 3.12 with PostgreSQL 17 and Redis 7 service containers. A separate GitHub-hosted job builds the Docker Compose images from a clean checkout without a build cache, starts two worker replicas, checks the migrated schema, and exercises successful and failed jobs over HTTP. Find both jobs in the pull request's **Checks** tab. [CI workflow](.github/workflows/ci.yml)
+
+Run the clean Compose build and smoke check from the repository root with the default local settings.
+
+```sh
+docker compose build --pull --no-cache
+docker compose up -d --no-build --wait --scale worker=2
+docker compose exec -T api alembic check
+python3 tests/compose_smoke.py
+docker compose down
+```
+
+Set `SMOKE_BASE_URL` when the API uses a different host port.
+
+## Milestone 1 limitations
+
+- A process pause or database outage longer than the remaining lease can let another worker start a retry while the original handler is still executing. The database rejects stale results. Handlers with external side effects need their own idempotency keys or safeguards.
+- A responsive worker can keep renewing the lease of a hung handler until an operator stops the worker. Milestone 1 leaves execution deadlines and cancellation to the operator.
+- Redis can receive repeated notifications during a backlog or broker interruption. The PostgreSQL claim and retry schedule govern which notifications can start an attempt.
+- Compose uses a single PostgreSQL instance and a single Redis instance. The API is intended for local use without authentication, and stored job history has no automatic retention policy.

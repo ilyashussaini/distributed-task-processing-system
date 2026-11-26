@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Barrier, Event
+from time import monotonic, sleep
 from uuid import UUID
 
 import pytest
@@ -80,6 +81,49 @@ def test_two_workers_can_run_distinct_jobs_concurrently(store, worker_factory, m
     assert [job.result for job in completed] == [{"word_count": 1}, {"word_count": 2}]
 
 
+def test_heartbeats_keep_long_running_attempt_exclusive(store, worker_factory, monkeypatch):
+    first, second = worker_factory(), worker_factory()
+    # Use a short database lease while keeping the normal Redis reclaim idle time.
+    store.settings.lease_seconds = 2
+    job = store.create("word_count", {"text": "slow job"})
+    started = Event()
+    release = Event()
+    calls = []
+
+    def slow_job(job_type, payload):
+        calls.append(job_type)
+        if len(calls) == 1:
+            started.set()
+            assert release.wait(timeout=10)
+        return run_job(job_type, payload)
+
+    monkeypatch.setattr(worker_module, "run_job", slow_job)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(first.run_once)
+        try:
+            assert started.wait(timeout=5)
+            initial_expiry = store.get(job.id).lease_expires_at
+            deadline = monotonic() + 5
+            while database_time(store) < initial_expiry:
+                assert monotonic() < deadline, "Database clock did not reach the initial expiry"
+                sleep(0.05)
+
+            second.broker.publish([job.id])
+            assert second.run_once()
+            current = store.get(job.id)
+            assert current.status == JobStatus.RUNNING
+            assert current.attempts == 1
+            assert current.lease_expires_at > initial_expiry
+        finally:
+            release.set()
+        assert future.result(timeout=5)
+
+    assert calls == ["word_count"]
+    completed = store.get(job.id)
+    assert completed.status == JobStatus.COMPLETED
+    assert completed.result == {"word_count": 2}
+
+
 def test_worker_retries_with_backoff_then_fails_without_stopping(store, worker_factory):
     worker = worker_factory()
     job = store.create("word_count", {"text": " \t"})
@@ -95,6 +139,12 @@ def test_worker_retries_with_backoff_then_fails_without_stopping(store, worker_f
         assert pending.completed_at is None
         delay = timedelta(seconds=seconds)
         assert before + delay <= pending.available_at <= after + delay
+        worker.broker.publish([job.id])
+        assert worker.run_once()
+        after_duplicate = store.get(job.id)
+        assert after_duplicate.status == JobStatus.PENDING
+        assert after_duplicate.attempts == attempt
+        assert after_duplicate.available_at == pending.available_at
         assert not worker.run_once()
         make_retry_due(store, job.id)
 
@@ -161,6 +211,34 @@ def test_worker_reclaims_message_left_unacknowledged(store, worker_factory):
     assert first.client.xpending(first.stream, first.group)["pending"] == 0
 
 
+def test_lost_acknowledgment_does_not_repeat_completed_job(store, worker_factory, monkeypatch):
+    first = worker_factory()
+    job = store.create("word_count", {"text": "completed once"})
+
+    def lose_ack(message):
+        raise ConnectionError(f"Redis unavailable while acknowledging {message.id}")
+
+    monkeypatch.setattr(first.broker, "acknowledge", lose_ack)
+    with pytest.raises(ConnectionError):
+        first.run_once()
+    assert store.get(job.id).status == JobStatus.COMPLETED
+
+    broker = first.broker
+    pending = broker.client.xpending_range(broker.stream, broker.group, "-", "+", count=1)
+    [delivery] = pending
+    broker.client.xclaim(
+        broker.stream, broker.group, broker.consumer, 0,
+        [delivery["message_id"]], idle=broker.reclaim_ms,
+    )
+    assert worker_factory().run_once()
+    completed = store.get(job.id)
+    assert completed.status == JobStatus.COMPLETED
+    assert completed.attempts == 1
+    assert completed.result == {"word_count": 2}
+    assert broker.client.xpending(broker.stream, broker.group)["pending"] == 0
+    assert broker.client.xlen(broker.stream) == 0
+
+
 def test_job_is_redispatched_after_stream_is_lost(store, worker_factory):
     first = worker_factory().broker
     job = store.create("word_count", {"text": "still durable"})
@@ -176,6 +254,10 @@ def test_expired_lease_is_retried_and_old_attempt_cannot_commit(store):
     job = store.create("word_count", {"text": "worker lost"})
     first_attempt = store.claim(job.id)
     change_deadlines(store, job.id, lease_expires_at=func.now())
+    assert not store.renew_lease(first_attempt)
+    assert not store.complete(first_attempt, {"word_count": 999})
+    assert not store.fail(first_attempt, "stale failure")
+    assert store.get(job.id).status == JobStatus.RUNNING
     assert store.recover_expired() == 1
     pending = store.get(job.id)
     assert pending.status == JobStatus.PENDING
@@ -185,7 +267,9 @@ def test_expired_lease_is_retried_and_old_attempt_cannot_commit(store):
     make_retry_due(store, job.id)
     second_attempt = store.claim(job.id)
     assert second_attempt.attempts == 2
+    assert not store.renew_lease(first_attempt)
     assert not store.complete(first_attempt, {"word_count": 999})
+    assert not store.fail(first_attempt, "stale failure")
     assert store.complete(second_attempt, {"word_count": 2})
     assert store.get(job.id).result == {"word_count": 2}
 

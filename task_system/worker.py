@@ -1,7 +1,9 @@
 import logging
 import signal
 import socket
-from threading import Event
+from collections.abc import Iterator
+from contextlib import contextmanager
+from threading import Event, Thread
 from uuid import UUID, uuid4
 
 from redis import Redis
@@ -12,6 +14,7 @@ from task_system.broker import Message, RedisBroker
 from task_system.config import Settings
 from task_system.db import make_engine, make_sessions
 from task_system.jobs import JobError, run_job
+from task_system.models import Job
 from task_system.store import JobStore
 
 logger = logging.getLogger(__name__)
@@ -43,6 +46,10 @@ class Worker:
         if job is None:
             return
         logger.info("Running job %s (attempt %s of %s)", job.id, job.attempts, job.max_attempts)
+        with self._keep_lease_alive(job):
+            self._execute(job)
+
+    def _execute(self, job: Job) -> None:
         try:
             result = run_job(job.type, job.payload)
         except JobError as exc:
@@ -54,7 +61,32 @@ class Worker:
         else:
             recorded = self.store.complete(job, result)
         if not recorded:
-            logger.warning("Discarding expired attempt %s for job %s", job.attempts, job.id)
+            logger.warning(
+                "Discarding outcome for job %s after attempt %s lost its lease", job.id, job.attempts
+            )
+
+    @contextmanager
+    def _keep_lease_alive(self, job: Job) -> Iterator[None]:
+        finished = Event()
+        interval = self.store.settings.lease_seconds / 3
+
+        def heartbeat() -> None:
+            while not finished.wait(interval):
+                try:
+                    if not self.store.renew_lease(job):
+                        return
+                except SQLAlchemyError as exc:
+                    logger.warning(
+                        "Could not renew lease for job %s (%s)", job.id, type(exc).__name__
+                    )
+
+        thread = Thread(target=heartbeat, name="lease-heartbeat")
+        thread.start()
+        try:
+            yield
+        finally:
+            finished.set()
+            thread.join()
 
     def run(self, stop: Event) -> None:
         while not stop.is_set():
