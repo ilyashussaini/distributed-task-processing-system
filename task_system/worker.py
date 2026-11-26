@@ -4,6 +4,7 @@ import socket
 from collections.abc import Iterator
 from contextlib import contextmanager
 from threading import Event, Thread
+from time import monotonic
 from uuid import UUID, uuid4
 
 from redis import Redis
@@ -54,28 +55,31 @@ class Worker:
         fields = {"job_id": str(job.id), "attempt": job.attempts}
         timeout = self.store.settings.attempt_timeout_seconds
         log_event(logger, "attempt_started", job_type=job.type, timeout_seconds=timeout, **fields)
+        started = monotonic()
         try:
             result = execute_attempt(job.id, job.type, job.payload, job.attempts, timeout)
         except AttemptTimeout as exc:
+            duration_ms = (monotonic() - started) * 1000
             log_event(
                 logger, "attempt_timed_out", level=logging.WARNING,
                 child_pid=exc.pid, exit_code=exc.exit_code, timeout_seconds=timeout, **fields,
             )
-            self._record_failure(job, str(exc), "timeout")
+            self._record_failure(job, str(exc), "timeout", duration_ms)
         except JobError as exc:
-            self._record_failure(job, str(exc), "handler_error")
+            self._record_failure(job, str(exc), "handler_error", (monotonic() - started) * 1000)
         except (AttemptProcessError, OSError) as exc:
+            duration_ms = (monotonic() - started) * 1000
             log_event(logger, "handler_process_error", level=logging.ERROR, error=str(exc), **fields)
-            self._record_failure(job, "Unexpected job error.", "process_error")
+            self._record_failure(job, "Unexpected job error.", "process_error", duration_ms)
         else:
-            if self.store.complete(job, result):
+            if self.store.complete(job, result, duration_ms=(monotonic() - started) * 1000):
                 log_event(logger, "attempt_completed", **fields)
             else:
                 log_event(logger, "attempt_outcome_discarded", level=logging.WARNING, **fields)
 
-    def _record_failure(self, job: Job, error: str, reason: str) -> None:
+    def _record_failure(self, job: Job, error: str, reason: str, duration_ms: float) -> None:
         fields = {"job_id": str(job.id), "attempt": job.attempts}
-        if self.store.fail(job, error):
+        if self.store.fail(job, error, duration_ms=duration_ms):
             log_event(
                 logger, "attempt_failed", reason=reason,
                 will_retry=job.attempts < job.max_attempts, **fields,

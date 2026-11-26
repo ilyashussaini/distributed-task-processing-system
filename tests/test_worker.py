@@ -184,6 +184,7 @@ def test_transient_handler_error_can_recover_on_retry(store, worker_factory, mon
 
 
 def test_execution_timeout_retries_and_worker_stays_available(store, worker_factory):
+    normal_timeout = store.settings.attempt_timeout_seconds
     store.settings.attempt_timeout_seconds = 1
     worker = worker_factory()
     job = store.create("recovery_demo", {"mode": "abandon_first_attempt"})
@@ -199,6 +200,7 @@ def test_execution_timeout_retries_and_worker_stays_available(store, worker_fact
     assert before + delay <= pending.available_at <= after + delay
     assert not worker.run_once()
 
+    store.settings.attempt_timeout_seconds = normal_timeout
     make_retry_due(store, job.id)
     assert worker.run_once()
     completed = store.get(job.id)

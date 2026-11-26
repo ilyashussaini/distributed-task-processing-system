@@ -1,6 +1,5 @@
 from contextlib import asynccontextmanager
-from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query, Response, status
@@ -10,7 +9,8 @@ from sqlalchemy import Engine
 from task_system.config import Settings
 from task_system.db import make_engine, make_sessions
 from task_system.jobs import RecoveryDemoPayload, WordCountPayload
-from task_system.models import Job, JobStatus
+from task_system.monitoring import monitoring_router
+from task_system.schemas import JobView
 from task_system.store import JobStore
 
 
@@ -31,32 +31,11 @@ class RecoveryDemoSubmission(BaseModel):
 JobSubmission = Annotated[WordCountSubmission | RecoveryDemoSubmission, Field(discriminator="type")]
 
 
-class JobView(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    type: str
-    status: JobStatus
-    attempts: int
-    max_attempts: int
-    result: dict[str, Any] | None
-    error: str | None
-    created_at: datetime
-    completed_at: datetime | None
-    next_attempt_at: datetime | None = None
-
-    @classmethod
-    def from_job(cls, job: Job) -> "JobView":
-        result = cls.model_validate(job)
-        if job.status == JobStatus.PENDING:
-            result.next_attempt_at = job.available_at
-        return result
-
-
 def create_app(settings: Settings | None = None, *, engine: Engine | None = None) -> FastAPI:
     settings = settings or Settings()
     db_engine = engine if engine is not None else make_engine(settings)
-    store = JobStore(make_sessions(db_engine), settings)
+    sessions = make_sessions(db_engine)
+    store = JobStore(sessions, settings)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -90,6 +69,7 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
     ) -> list[JobView]:
         return [JobView.from_job(job) for job in store.list_jobs(limit, offset)]
 
+    app.include_router(monitoring_router(sessions))
     return app
 
 
