@@ -2,6 +2,12 @@
 
 A distributed background job processor with a React and TypeScript monitoring dashboard. FastAPI accepts requests, PostgreSQL stores job and attempt state via SQLAlchemy, and Redis Streams distributes jobs across Python 3.12 workers. Jobs include word counting and sales CSV validation and aggregation.
 
+
+**Live Demo:** [Explore Taskflow](https://taskflow-demo-9mq.pages.dev/)
+
+**Demo note:** Read-only dashboard with synthetic job data and real recorded performance benchmarks.
+
+
 ## Portfolio demo
 
 Taskflow shows a job from HTTP submission through queueing, execution, retry, and a persisted result. The dashboard lets reviewers browse attempt history and compare measured throughput and latency across worker counts.
