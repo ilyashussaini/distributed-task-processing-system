@@ -52,6 +52,27 @@ jobs:
           TEST_REDIS_URL: redis://127.0.0.1:6379/0
         run: python -m pytest -m integration -ra
 
+  frontend:
+    name: Frontend lint, tests, and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
   compose:
     name: Clean Compose build and smoke test
     runs-on: ubuntu-24.04
@@ -68,6 +89,7 @@ jobs:
         run: |
           docker compose exec -T api alembic check
           python3 tests/compose_smoke.py
+          SMOKE_BASE_URL=http://127.0.0.1:3000/api python3 tests/dashboard_smoke.py
           test "$(docker compose ps --status running -q worker | wc -l)" -eq 2
       - name: Exercise timeout and worker-loss recovery
         run: |

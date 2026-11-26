@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from task_system.config import Settings
 from task_system.jobs import retry_delay
 from task_system.logging import log_event
-from task_system.models import Job, JobStatus
+from task_system.models import AttemptStatus, Job, JobAttempt, JobStatus
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +73,12 @@ class JobStore:
             job.status = JobStatus.RUNNING
             job.attempts += 1
             job.lease_expires_at = now + timedelta(seconds=self.settings.lease_seconds)
+            session.add(JobAttempt(
+                job_id=job.id, number=job.attempts, status=AttemptStatus.RUNNING, started_at=now,
+            ))
             return job
 
-    def complete(self, claim: Job, result: dict[str, Any]) -> bool:
+    def complete(self, claim: Job, result: dict[str, Any], *, duration_ms: float | None = None) -> bool:
         with self.sessions.begin() as session:
             attempt = self._lock_live_attempt(session, claim)
             if attempt is None:
@@ -86,15 +89,19 @@ class JobStore:
             job.error = None
             job.completed_at = now
             job.lease_expires_at = None
+            self._finish_attempt(session, job, now, AttemptStatus.COMPLETED, duration_ms=duration_ms)
             return True
 
-    def fail(self, claim: Job, error: str) -> bool:
+    def fail(self, claim: Job, error: str, *, duration_ms: float | None = None) -> bool:
         with self.sessions.begin() as session:
             attempt = self._lock_live_attempt(session, claim)
             if attempt is None:
                 return False
             job, now = attempt
             self._record_failure(job, error, now)
+            self._finish_attempt(
+                session, job, now, AttemptStatus.FAILED, duration_ms=duration_ms, error=error,
+            )
             return True
 
     def renew_lease(self, claim: Job) -> bool:
@@ -118,7 +125,9 @@ class JobStore:
             )
             jobs = list(session.scalars(query))
             for job in jobs:
-                self._record_failure(job, "Worker lease expired.", now)
+                error = "Worker lease expired."
+                self._record_failure(job, error, now)
+                self._finish_attempt(session, job, now, AttemptStatus.ABANDONED, error=error)
         for job in jobs:
             log_event(
                 logger, "expired_attempt_recovered", job_id=str(job.id), attempt=job.attempts,
@@ -156,3 +165,15 @@ class JobStore:
         job.status = JobStatus.PENDING
         job.available_at = now + timedelta(seconds=delay)
         job.dispatch_after = job.available_at
+
+    @staticmethod
+    def _finish_attempt(
+        session: Session, job: Job, now: datetime, status: AttemptStatus,
+        *, duration_ms: float | None = None, error: str | None = None,
+    ) -> None:
+        attempt = session.get(JobAttempt, (job.id, job.attempts))
+        if attempt is not None:
+            attempt.status = status
+            attempt.finished_at = now
+            attempt.duration_ms = duration_ms
+            attempt.error = error
