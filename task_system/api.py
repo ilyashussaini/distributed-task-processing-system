@@ -1,24 +1,34 @@
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query, Response, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Engine
 
 from task_system.config import Settings
 from task_system.db import make_engine, make_sessions
-from task_system.jobs import JobType, WordCountPayload
+from task_system.jobs import RecoveryDemoPayload, WordCountPayload
 from task_system.models import Job, JobStatus
 from task_system.store import JobStore
 
 
-class JobSubmission(BaseModel):
+class WordCountSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    type: JobType
+    type: Literal["word_count"]
     payload: WordCountPayload
+
+
+class RecoveryDemoSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["recovery_demo"]
+    payload: RecoveryDemoPayload
+
+
+JobSubmission = Annotated[WordCountSubmission | RecoveryDemoSubmission, Field(discriminator="type")]
 
 
 class JobView(BaseModel):
@@ -60,6 +70,8 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
 
     @app.post("/jobs", response_model=JobView, status_code=status.HTTP_202_ACCEPTED)
     def submit_job(submission: JobSubmission, response: Response) -> JobView:
+        if submission.type == "recovery_demo" and not settings.enable_recovery_demo:
+            raise HTTPException(status_code=403, detail="Recovery demo jobs are disabled")
         job = store.create(submission.type, submission.payload.model_dump())
         response.headers["Location"] = f"/jobs/{job.id}"
         return JobView.from_job(job)

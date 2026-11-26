@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
@@ -8,7 +9,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from task_system.config import Settings
 from task_system.jobs import retry_delay
+from task_system.logging import log_event
 from task_system.models import Job, JobStatus
+
+logger = logging.getLogger(__name__)
 
 
 class JobStore:
@@ -115,7 +119,12 @@ class JobStore:
             jobs = list(session.scalars(query))
             for job in jobs:
                 self._record_failure(job, "Worker lease expired.", now)
-            return len(jobs)
+        for job in jobs:
+            log_event(
+                logger, "expired_attempt_recovered", job_id=str(job.id), attempt=job.attempts,
+                will_retry=job.status == JobStatus.PENDING,
+            )
+        return len(jobs)
 
     @staticmethod
     def _lock_live_attempt(session: Session, claim: Job) -> tuple[Job, datetime] | None:

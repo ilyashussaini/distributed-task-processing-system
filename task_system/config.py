@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:6379/0"
     redis_stream: str = "task-system:jobs"
     max_attempts: int = Field(default=3, ge=1, le=20)
+    attempt_timeout_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    enable_recovery_demo: bool = False
     retry_base_seconds: float = Field(default=2, gt=0, allow_inf_nan=False)
     retry_max_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
     lease_seconds: float = Field(default=30, ge=1, allow_inf_nan=False)

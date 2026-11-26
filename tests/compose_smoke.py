@@ -8,10 +8,10 @@ from urllib.request import Request, urlopen
 BASE_URL = os.getenv("SMOKE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 
 
-def submit(text: str) -> str:
+def submit(job_type: str, payload: dict[str, str]) -> str:
     request = Request(
         f"{BASE_URL}/jobs",
-        data=json.dumps({"type": "word_count", "payload": {"text": text}}).encode(),
+        data=json.dumps({"type": job_type, "payload": payload}).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -42,12 +42,12 @@ def wait_for_terminal(path: str) -> dict:
 
 
 def main() -> None:
-    completed = wait_for_terminal(submit("Hello background workers"))
+    completed = wait_for_terminal(submit("word_count", {"text": "Hello background workers"}))
     assert completed["status"] == "completed"
     assert completed["attempts"] == 1
     assert completed["result"] == {"word_count": 3}
 
-    failed = wait_for_terminal(submit("   "))
+    failed = wait_for_terminal(submit("word_count", {"text": "   "}))
     assert failed["status"] == "failed"
     assert failed["attempts"] == 3
     assert failed["error"] == "Text must contain at least one word."
