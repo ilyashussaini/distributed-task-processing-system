@@ -4,3 +4,5 @@
 .pytest_cache
 frontend
 **/__pycache__
+deploy/secrets
+deploy/.env

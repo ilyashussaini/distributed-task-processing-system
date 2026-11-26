@@ -72,6 +72,10 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      - name: Build the static portfolio demo
+        env:
+          VITE_TASKFLOW_DEMO: 'true'
+        run: npm run build
 
   compose:
     name: Clean Compose build and smoke test
@@ -83,6 +87,8 @@ jobs:
           persist-credentials: false
       - name: Build application images from scratch
         run: docker compose build --pull --no-cache
+      - name: Validate the protected Compose profile
+        run: docker compose --env-file deploy/.env.example -f deploy/compose.yaml config --quiet
       - name: Start the complete stack
         run: docker compose up -d --no-build --wait --wait-timeout 120 --scale worker=2
       - name: Verify schema and live job processing

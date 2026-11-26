@@ -4,6 +4,9 @@ from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
+from redis.asyncio import Redis
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
 from sqlalchemy import Engine
 from starlette.concurrency import run_in_threadpool
 
@@ -13,6 +16,7 @@ from task_system.db import make_engine, make_sessions
 from task_system.jobs import RecoveryDemoPayload, WordCountPayload
 from task_system.monitoring import monitoring_router
 from task_system.schemas import JobView
+from task_system.security import APIProtection
 from task_system.store import JobStore
 
 
@@ -38,16 +42,36 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
     db_engine = engine if engine is not None else make_engine(settings)
     sessions = make_sessions(db_engine)
     store = JobStore(sessions, settings)
+    limiter = None
+    if settings.read_rate_per_minute or settings.write_rate_per_minute:
+        redis_url, redis_password = settings.redis_connection
+        limiter = Redis.from_url(
+            redis_url, password=redis_password, socket_connect_timeout=1, socket_timeout=1,
+            retry=Retry(NoBackoff(), 0),
+        )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         try:
             yield
         finally:
+            if limiter is not None:
+                await limiter.aclose()
             if engine is None:
                 db_engine.dispose()
 
-    app = FastAPI(title="Distributed Task Processing System", version="1.0.0", lifespan=lifespan)
+    production = settings.app_env == "production"
+    app = FastAPI(
+        title="Distributed Task Processing System", version="1.0.0", lifespan=lifespan,
+        docs_url=None if production else "/docs",
+        redoc_url=None if production else "/redoc",
+        openapi_url=None if production else "/openapi.json",
+    )
+    app.add_middleware(APIProtection, settings=settings, limiter=limiter)
+
+    @app.get("/healthz", include_in_schema=False)
+    def healthz() -> dict[str, str]:
+        return {"status": "ok"}
 
     @app.post("/jobs", response_model=JobView, status_code=status.HTTP_202_ACCEPTED)
     def submit_job(submission: JobSubmission, response: Response) -> JobView:

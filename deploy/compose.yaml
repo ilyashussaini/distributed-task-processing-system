@@ -1,0 +1,185 @@
+name: taskflow-production
+
+x-logging: &bounded-logs
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-taskflow: &taskflow
+  build: ..
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  logging: *bounded-logs
+  environment: &taskflow-env
+    POSTGRES_HOST: postgres
+    POSTGRES_USER: tasks
+    POSTGRES_DB: tasks
+    REDIS_URL: redis://redis:6379/0
+  secrets:
+    - postgres_password
+    - redis_password
+  networks:
+    - data
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    entrypoint: ["/bin/sh", "/opt/taskflow/start-caddy.sh"]
+    environment:
+      TASKFLOW_DOMAIN: ${TASKFLOW_DOMAIN:?Set the Taskflow hostname in deploy/.env}
+      TASKFLOW_ACME_EMAIL: ${TASKFLOW_ACME_EMAIL:?Set the ACME contact in deploy/.env}
+      NO_PROXY: localhost,127.0.0.1,api,dashboard
+      no_proxy: localhost,127.0.0.1,api,dashboard
+    secrets:
+      - operator_hash
+      - api_token
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./start-caddy.sh:/opt/taskflow/start-caddy.sh:ro
+      - caddy-data:/data
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      api:
+        condition: service_healthy
+      dashboard:
+        condition: service_started
+    networks:
+      - frontend
+    restart: unless-stopped
+    logging: *bounded-logs
+
+  dashboard:
+    build: ../frontend
+    networks:
+      - frontend
+    restart: unless-stopped
+    logging: *bounded-logs
+
+  api:
+    <<: *taskflow
+    environment:
+      <<: *taskflow-env
+      APP_ENV: production
+      PUBLIC_ORIGIN: https://${TASKFLOW_DOMAIN:?Set the Taskflow hostname in deploy/.env}
+      READ_RATE_PER_MINUTE: ${READ_RATE_PER_MINUTE:-240}
+      WRITE_RATE_PER_MINUTE: ${WRITE_RATE_PER_MINUTE:-20}
+    secrets:
+      - api_token
+      - postgres_password
+      - redis_password
+    networks:
+      - frontend
+      - data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/healthz', timeout=2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  worker:
+    <<: *taskflow
+    command: ["python", "-m", "task_system.worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    stop_grace_period: 40s
+    restart: unless-stopped
+
+  retention:
+    <<: *taskflow
+    environment:
+      <<: *taskflow-env
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
+    secrets:
+      - postgres_password
+    command: ["python", "-m", "task_system.retention", "--loop"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  migrate:
+    <<: *taskflow
+    secrets:
+      - postgres_password
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: tasks
+      POSTGRES_DB: tasks
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=40"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    shm_size: 128m
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "tasks", "-d", "tasks"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    logging: *bounded-logs
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--aclfile", "/run/secrets/redis_acl", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    secrets:
+      - redis_password
+      - redis_acl
+    volumes:
+      - redis-data:/data
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$(cat /run/secrets/redis_password) redis-cli ping | grep -qx PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    logging: *bounded-logs
+
+networks:
+  frontend:
+  data:
+    internal: true
+
+volumes:
+  caddy-data:
+  postgres-data:
+  redis-data:
+
+secrets:
+  operator_hash:
+    file: ./secrets/operator_hash
+  api_token:
+    file: ./secrets/api_token
+  postgres_password:
+    file: ./secrets/postgres_password
+  redis_password:
+    file: ./secrets/redis_password
+  redis_acl:
+    file: ./secrets/redis_acl

@@ -1,6 +1,7 @@
 import { AlertCircle, FileText, LoaderCircle, X } from 'lucide-react'
 import { type FormEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { getJobDetails, submitCsv, submitWordCount } from '../api'
+import { isDemoMode } from '../demo'
 import { formatCount, formatDuration, formatTimestamp, formatType } from '../format'
 import type { Job } from '../types'
 import { usePoll } from '../usePoll'
@@ -135,7 +136,7 @@ function CsvResult({ result }: { result: Record<string, unknown> }) {
 
 export function JobDetails({ initial, onClose }: { initial: Job; onClose: () => void }) {
   const load = useCallback((signal: AbortSignal) => getJobDetails(initial.id, signal), [initial.id])
-  const state = usePoll(initial.id, load)
+  const state = usePoll(initial.id, load, true, isDemoMode() ? null : undefined)
   const job = state.data?.job ?? initial
   const attempts = state.data?.attempts
   const wordCount = job.type === 'word_count' && typeof job.result?.word_count === 'number' ? job.result.word_count : null

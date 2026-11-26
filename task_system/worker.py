@@ -148,9 +148,11 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop_worker)
     consumer = f"{hostname}-{uuid4().hex}"
     log_event(logger, "worker_started", consumer=consumer)
+    redis_url, redis_password = settings.redis_connection
     try:
         with Redis.from_url(
-            settings.redis_url,
+            redis_url,
+            password=redis_password,
             decode_responses=True,
             socket_connect_timeout=3,
             socket_timeout=4,

@@ -10,10 +10,11 @@ const views = {
   analytics: { label: 'Analytics', icon: BarChart3 },
 }
 
-export function Shell({ view, state, refresh, children }: {
+export function Shell({ view, state, refresh, demo, children }: {
   view: View
   state: PollState<unknown>
   refresh: () => void
+  demo: boolean
   children: ReactNode
 }) {
   const statusText = {
@@ -39,20 +40,20 @@ export function Shell({ view, state, refresh, children }: {
         </nav>
         <div className="sidebar-footer">
           <div className="workspace-icon"><Activity size={17} aria-hidden="true" /></div>
-          <span><strong>Job monitoring</strong><span>Auto-refresh every 5s</span></span>
+          <span><strong>Job monitoring</strong><span>{demo ? 'Sample dataset' : 'Auto-refresh every 5s'}</span></span>
         </div>
       </aside>
       <div className="workspace">
         <header className="topbar">
           <div className="breadcrumbs"><span>Workspace</span><ChevronRight size={14} aria-hidden="true" /><strong>{views[view].label}</strong></div>
           <div className="connection">
-            {state.updatedAt !== null && <span className="last-sync">Updated {formatTime(state.updatedAt)}</span>}
+            {!demo && state.updatedAt !== null && <span className="last-sync">Updated {formatTime(state.updatedAt)}</span>}
             <span className={`connection-badge connection-${state.status}`} role="status">
-              <span className="status-dot" aria-hidden="true" />{statusText}
+              <span className="status-dot" aria-hidden="true" />{demo ? 'Sample data' : statusText}
             </span>
-            <button className="icon-button" onClick={refresh} aria-label="Refresh dashboard" title="Refresh dashboard">
+            {!demo && <button className="icon-button" onClick={refresh} aria-label="Refresh dashboard" title="Refresh dashboard">
               <RefreshCw size={16} aria-hidden="true" />
-            </button>
+            </button>}
           </div>
         </header>
         <main id="main-content" tabIndex={-1} className="main-content">{children}</main>

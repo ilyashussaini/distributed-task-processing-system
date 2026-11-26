@@ -17,6 +17,7 @@ export function usePoll<T>(
   key: string,
   load: (signal: AbortSignal) => Promise<T>,
   enabled = true,
+  interval: number | null = POLL_INTERVAL,
 ) {
   const [record, setRecord] = useState<{ key: string; state: PollState<T> }>()
   const [revision, setRevision] = useState(0)
@@ -41,7 +42,7 @@ export function usePoll<T>(
           },
         }))
       } finally {
-        if (!controller.signal.aborted) next = setTimeout(poll, POLL_INTERVAL)
+        if (!controller.signal.aborted && interval !== null) next = setTimeout(poll, interval)
       }
     }
     void poll()
@@ -49,7 +50,7 @@ export function usePoll<T>(
       clearTimeout(next)
       controller.abort()
     }
-  }, [enabled, key, load, revision])
+  }, [enabled, interval, key, load, revision])
 
   return {
     ...(record?.key === key ? record.state : empty),

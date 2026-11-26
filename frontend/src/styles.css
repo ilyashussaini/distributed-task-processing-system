@@ -343,3 +343,9 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 @media (max-width: 650px) {
   .benchmark-charts { grid-template-columns: minmax(0, 1fr); }
 }
+
+.demo-note {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 17px; padding: 9px 12px;
+  border: 1px solid #463d71; background: #211e3b; color: #d9d3ff; border-radius: 8px; font-size: .86rem;
+}
+.demo-note svg { flex-shrink: 0; color: var(--accent); }
